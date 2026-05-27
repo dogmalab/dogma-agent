@@ -1,0 +1,15 @@
+[package]
+name = "dogma-v2-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Dogma 2.0 — common types, error protocol, and NDJSON event definitions"
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+uuid.workspace = true

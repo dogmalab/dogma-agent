@@ -1,0 +1,27 @@
+[package]
+name = "dogma-v2-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Dogma 2.0 — Entrypoint de control por terminal (CLI)"
+
+[dependencies]
+dogma-v2-common = { path = "../dogma-v2-common" }
+dogma-v2-core = { path = "../dogma-v2-core" }
+
+# CLI
+clap.workspace = true
+
+# Async
+tokio.workspace = true
+
+# Serialization
+serde_json.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+# Utilities
+chrono.workspace = true

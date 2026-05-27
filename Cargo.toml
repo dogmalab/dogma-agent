@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "dogma-v2-common",
+    "dogma-v2-core",
+    "dogma-v2-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# Async
+tokio = { version = "1.43", features = ["full"] }
+
+# Error handling
+thiserror = "2.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Sync (parking_lot instead of std::sync::RwLock)
+parking_lot = "0.12"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+async-trait = "0.1"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Vector DB (dogma-vdb — native state backend)
+dogma-vdb = { path = "../dogma-vdb" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
