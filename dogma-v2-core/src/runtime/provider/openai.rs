@@ -184,6 +184,11 @@ impl OpenAiProvider {
             entry["tool_calls"] = Value::Array(tcs);
         }
 
+        // Incluir campos extra no-estándar (reasoning_content, thinking, etc.)
+        for (key, val) in &msg.extra_fields {
+            entry[key] = val.clone();
+        }
+
         entry
     }
 
@@ -306,7 +311,7 @@ impl LLMProvider for OpenAiProvider {
             .map(|arr| arr.as_slice())
             .unwrap_or(&[]);
 
-        let (content, tool_calls) = if let Some(first_choice) = choices.first() {
+        let (content, tool_calls, extra_fields) = if let Some(first_choice) = choices.first() {
             let msg = first_choice.get("message").unwrap_or(&Value::Null);
 
             let content = msg
@@ -317,13 +322,25 @@ impl LLMProvider for OpenAiProvider {
 
             let tool_calls = Self::parse_tool_calls(msg);
 
-            (content, tool_calls)
+            // Extraer campos no-estándar del assistant message
+            // (reasoning_content de DeepSeek, thinking de Claude, etc.)
+            let known_keys = ["content", "tool_calls", "role", "refusal"];
+            let extra: Vec<(String, Value)> = match msg {
+                Value::Object(map) => map
+                    .iter()
+                    .filter(|(k, _)| !known_keys.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+                _ => Vec::new(),
+            };
+
+            (content, tool_calls, extra)
         } else {
             warn!(
                 "LLM response missing 'choices' array: {}",
                 serde_json::to_string(&root).unwrap_or_default()
             );
-            (String::new(), Vec::new())
+            (String::new(), Vec::new(), Vec::new())
         };
 
         // ── 5. Parseo ultra-defensivo de usage ────────────────────────
@@ -333,16 +350,18 @@ impl LLMProvider for OpenAiProvider {
         });
 
         debug!(
-            "LLM response: content_len={}, tool_calls={}, tokens={}",
+            "LLM response: content_len={}, tool_calls={}, tokens={}, extra_fields={}",
             content.len(),
             tool_calls.len(),
             usage.total_tokens,
+            extra_fields.len(),
         );
 
         Ok(LLMResponse {
             content,
             tool_calls,
             usage,
+            extra_fields,
         })
     }
 }

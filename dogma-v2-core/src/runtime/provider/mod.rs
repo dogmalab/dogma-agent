@@ -32,6 +32,11 @@ pub struct Message {
     /// Tool calls solicitadas por el LLM (solo en mensajes assistant).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    /// Campos adicionales no-estándar del proveedor (ej: reasoning_content
+    /// de DeepSeek, thinking de Claude). Se serializan directamente en el
+    /// mensaje assistant para preservar el estado del provider.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_fields: Vec<(String, serde_json::Value)>,
 }
 
 impl Message {
@@ -43,6 +48,7 @@ impl Message {
             tool_call_id: None,
             tool_name: None,
             tool_calls: Vec::new(),
+            extra_fields: Vec::new(),
         }
     }
 
@@ -62,6 +68,13 @@ impl Message {
     #[must_use]
     pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
         self.tool_calls = tool_calls;
+        self
+    }
+
+    /// Añade un campo extra no-estándar (ej: reasoning_content de DeepSeek).
+    #[must_use]
+    pub fn with_extra_field(mut self, key: &str, value: serde_json::Value) -> Self {
+        self.extra_fields.push((key.to_string(), value));
         self
     }
 }
@@ -115,6 +128,11 @@ pub struct LLMResponse {
     /// Uso de tokens reportado por el provider.
     #[serde(default)]
     pub usage: TokenUsage,
+    /// Campos extra no-estándar del assistant message original
+    /// (ej: reasoning_content de DeepSeek). Se reinyectan al
+    /// construir el assistant message en el RuntimeLoop.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_fields: Vec<(String, serde_json::Value)>,
 }
 
 /// Una tool call solicitada por el LLM.

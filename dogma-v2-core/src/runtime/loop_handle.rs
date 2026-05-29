@@ -176,6 +176,9 @@ impl RuntimeLoop {
                 if !response.tool_calls.is_empty() {
                     msg = msg.with_tool_calls(response.tool_calls.clone());
                 }
+                for (key, val) in &response.extra_fields {
+                    msg = msg.with_extra_field(key, val.clone());
+                }
                 state.messages.push(msg);
             }
 

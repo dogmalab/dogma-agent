@@ -53,6 +53,7 @@ impl LLMProvider for MockLLMProvider {
             content: self.response.clone(),
             tool_calls: vec![],
             usage: TokenUsage::default(),
+            extra_fields: vec![],
         })
     }
 }
@@ -232,6 +233,7 @@ impl LLMProvider for ToolCallMockProvider {
                 arguments: r#"{"path": "/tmp/test.txt"}"#.into(),
             }],
             usage: TokenUsage::default(),
+            extra_fields: vec![],
         })
     }
 }
