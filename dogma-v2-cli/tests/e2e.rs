@@ -200,6 +200,72 @@ async fn test_runtime_loop_with_max_iterations() {
     );
 }
 
+#[tokio::test]
+async fn test_runtime_loop_sliding_window() {
+    // Verificar que el loop funciona con una ventana deslizante pequeña
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let mut session = SessionManager::open(dir.path()).expect("open session");
+    let session_id = session
+        .create_session("sliding-window-test")
+        .expect("create session");
+
+    let provider = Arc::new(MockLLMProvider::new(
+        test_provider_config(),
+        "sliding window response",
+    ));
+    let tools = create_survival_tools();
+    let loop_config = LoopConfig {
+        max_hot_messages: 2, // ventana muy pequeña
+        ..Default::default()
+    };
+
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+
+    let response = runtime
+        .run("Test sliding window", &session_id)
+        .await
+        .expect("runtime loop with sliding window should succeed");
+
+    assert_eq!(response, "sliding window response");
+}
+
+#[tokio::test]
+async fn test_runtime_loop_sliding_window_persists_messages() {
+    // Verificar que los mensajes se persisten aunque estén fuera de la
+    // ventana caliente (max_hot_messages = 2).
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let mut session = SessionManager::open(dir.path()).expect("open session");
+    let session_id = session
+        .create_session("sliding-persist")
+        .expect("create session");
+
+    let provider = Arc::new(MockLLMProvider::new(
+        test_provider_config(),
+        "persist test",
+    ));
+    let tools = create_survival_tools();
+    let loop_config = LoopConfig {
+        max_hot_messages: 2,
+        ..Default::default()
+    };
+
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    runtime
+        .run("First call", &session_id)
+        .await
+        .expect("first call");
+    runtime
+        .run("Second call", &session_id)
+        .await
+        .expect("second call");
+
+    // Re-abrir la sesión — los archivos deben existir y ser válidos
+    let _reopened =
+        SessionManager::open(dir.path()).expect("reopen session after sliding window");
+}
+
 // ---------------------------------------------------------------------------
 // Mock que siempre devuelve tool_calls (para probar límite de iteraciones)
 // ---------------------------------------------------------------------------

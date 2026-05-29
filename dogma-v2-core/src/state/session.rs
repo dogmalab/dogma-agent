@@ -26,17 +26,21 @@ use crate::runtime::provider::MessageRole;
 use dogma_v2_common::Result;
 use dogma_vdb::collection::Collection;
 use dogma_vdb::doc::Document;
+use dogma_vdb::embedding::Embedder;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// Gestiona las sesiones del agente como nodos en dogma-vdb.
-#[allow(dead_code)]
 pub struct SessionManager {
     /// Colección vdb que almacena todos los nodos de sesión.
     collection: Collection,
-    #[allow(dead_code)]
     /// Directorio base para los archivos .vdb.
+    #[allow(dead_code)]
     base_path: PathBuf,
+    /// Embedder opcional para búsqueda semántica.
+    /// Si no está configurado, `search_similar()` devuelve vacío.
+    embedder: Option<Arc<dyn Embedder>>,
 }
 
 impl SessionManager {
@@ -65,7 +69,15 @@ impl SessionManager {
         Ok(Self {
             collection,
             base_path,
+            embedder: None,
         })
+    }
+
+    /// Conecta un embedder para habilitar búsqueda semántica.
+    #[must_use]
+    pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
+        self.embedder = Some(embedder);
+        self
     }
 
     /// Crea una nueva sesión y devuelve su ID.
@@ -191,6 +203,108 @@ impl SessionManager {
     /// Devuelve una referencia a la colección subyacente.
     pub fn collection(&self) -> &Collection {
         &self.collection
+    }
+
+    /// Busca contexto semánticamente similar en el historial de la sesión.
+    ///
+    /// Usa el embedder configurado para convertir `query` en vector,
+    /// luego busca en dogma-vdb filtrando por `session_id`.
+    /// Si no hay embedder, devuelve una lista vacía sin error.
+    pub fn search_similar(
+        &self,
+        query: &str,
+        session_id: &str,
+        k: usize,
+    ) -> Result<Vec<super::compressor::SemanticMatch>> {
+        let embedder = match &self.embedder {
+            Some(e) => e,
+            None => {
+                debug!("Semantic search requested but no embedder configured");
+                return Ok(Vec::new());
+            }
+        };
+
+        let embedding = embedder.embed(query).map_err(|e| {
+            dogma_v2_common::error::Error::Internal(format!("embedding failed: {e}"))
+        })?;
+
+        if embedding.is_empty() {
+            debug!("Embedder returned empty vector — skipping search");
+            return Ok(Vec::new());
+        }
+
+        let results = self.collection.search_filtered(
+            &embedding,
+            k,
+            &|doc: &Document| -> bool {
+                doc.metadata_val("session_id") == Some(session_id)
+                    && matches!(
+                        doc.metadata_val("node_type"),
+                        Some("Message") | Some("ToolResult") | Some("Chunk")
+                    )
+            },
+        );
+
+        Ok(results
+            .into_iter()
+            .map(|sd| super::compressor::SemanticMatch {
+                node_id: sd.document.id,
+                content: sd.document.text,
+                score: sd.score,
+                session_id: session_id.to_string(),
+            })
+            .collect())
+    }
+
+    /// Genera embeddings para mensajes que aún no los tienen.
+    ///
+    /// Escanea la colección en busca de documentos de la sesión sin
+    /// embedding, los embeddea en batch, y actualiza cada documento.
+    /// Devuelve la cantidad de documentos embeddeados.
+    pub fn embed_pending_messages(&mut self, session_id: &str) -> Result<usize> {
+        let embedder = match &self.embedder {
+            Some(e) => e,
+            None => {
+                debug!("Embed requested but no embedder configured");
+                return Ok(0);
+            }
+        };
+
+        // Recoger documentos sin embedding
+        let pending: Vec<Document> = self
+            .collection
+            .documents()
+            .filter(|d| {
+                d.metadata_val("session_id") == Some(session_id)
+                    && !d.is_embedded()
+            })
+            .cloned()
+            .collect();
+
+        if pending.is_empty() {
+            return Ok(0);
+        }
+
+        let texts: Vec<&str> = pending.iter().map(|d| d.text.as_str()).collect();
+        let embeddings = embedder.embed_batch(&texts).map_err(|e| {
+            dogma_v2_common::error::Error::Internal(format!("batch embedding failed: {e}"))
+        })?;
+
+        let embed_count = embeddings.len();
+
+        for (doc, emb) in pending.into_iter().zip(embeddings) {
+            let updated = Document::builder(&doc.id, &doc.text)
+                .embedding(emb)
+                .metadatas(doc.metadata.clone())
+                .build();
+            // update = delete + insert (atomic en Collection)
+            self.collection
+                .update(updated)
+                .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
+        }
+
+        debug!("Embedded {} pending messages", embed_count);
+        Ok(embed_count)
     }
 }
 
