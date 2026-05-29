@@ -128,13 +128,24 @@ mod tests {
     fn with_env_vars<R>(kvs: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
         let _guard = ENV_LOCK.lock().expect("env lock");
 
-        // Salvar valores originales
-        let originals: Vec<(&str, Option<String>)> = kvs
+        // Salvar TODAS las DOGMA_* del entorno real
+        let all_keys: Vec<String> = std::env::vars()
+            .filter(|(k, _)| k.starts_with("DOGMA_"))
+            .map(|(k, _)| k)
+            .collect();
+        let saved: Vec<(String, Option<String>)> = all_keys
             .iter()
-            .map(|(k, _)| (*k, std::env::var(k).ok()))
+            .map(|k| (k.clone(), std::env::var(k).ok()))
             .collect();
 
-        // Aplicar nuevos valores
+        // Remover todas las DOGMA_* del entorno
+        for (k, _) in &saved {
+            unsafe {
+                std::env::remove_var(k);
+            }
+        }
+
+        // Aplicar solo los valores del test
         for &(k, v) in kvs {
             unsafe {
                 std::env::set_var(k, v);
@@ -144,7 +155,7 @@ mod tests {
         let result = f();
 
         // Restaurar valores originales
-        for (k, original) in &originals {
+        for (k, original) in &saved {
             match original {
                 Some(val) => unsafe {
                     std::env::set_var(k, val);
