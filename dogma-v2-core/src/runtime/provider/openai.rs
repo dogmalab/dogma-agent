@@ -164,6 +164,26 @@ impl OpenAiProvider {
             entry["tool_call_id"] = Value::String(call_id.clone());
         }
 
+        // Si el assistant message tiene tool_calls, serializarlas
+        // en el formato estándar OpenAI
+        if !msg.tool_calls.is_empty() {
+            let tcs: Vec<Value> = msg
+                .tool_calls
+                .iter()
+                .map(|tc| {
+                    serde_json::json!({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": tc.arguments,
+                        }
+                    })
+                })
+                .collect();
+            entry["tool_calls"] = Value::Array(tcs);
+        }
+
         entry
     }
 

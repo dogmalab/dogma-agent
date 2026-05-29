@@ -118,10 +118,16 @@ pub fn load_provider_config(keys_path: Option<&Path>) -> Result<ProviderConfig, 
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::LazyLock;
+    use std::sync::Mutex;
 
-    // ── Helper: ejecuta un closure con vars de entorno aisladas ──────
-    //     Previene race conditions con otros tests que modifican env.
+    /// Mutex global para serializar tests que modifican env vars.
+    /// Previene race conditions entre tests paralelos de cargo test.
+    static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
     fn with_env_vars<R>(kvs: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+
         // Salvar valores originales
         let originals: Vec<(&str, Option<String>)> = kvs
             .iter()
@@ -201,10 +207,7 @@ api_key = "sk-test-key-for-toml"
     #[test]
     fn test_load_fails_when_none_found() {
         // Este test debe ejecutarse sin vars DOGMA_* en el entorno.
-        // El helper with_env_vars NO debe llamarse aquí ya que no
-        // queremos setear ninguna var. Simplemente nos aseguramos
-        // de que las vars existentes no interfieran limpiándolas
-        // y restaurándolas.
+        let _guard = ENV_LOCK.lock().expect("env lock");
         let dir = tempfile::TempDir::new().expect("temp dir");
         let nonexistent = dir.path().join("no-file-here.toml");
 

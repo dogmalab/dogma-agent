@@ -172,9 +172,11 @@ impl RuntimeLoop {
             {
                 let mut state = self.state.write();
                 state.iteration += 1;
-                state
-                    .messages
-                    .push(Message::new(MessageRole::Assistant, &response.content));
+                let mut msg = Message::new(MessageRole::Assistant, &response.content);
+                if !response.tool_calls.is_empty() {
+                    msg = msg.with_tool_calls(response.tool_calls.clone());
+                }
+                state.messages.push(msg);
             }
 
             for tc in &tool_calls {

@@ -29,6 +29,9 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
+    /// Tool calls solicitadas por el LLM (solo en mensajes assistant).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
 }
 
 impl Message {
@@ -39,6 +42,7 @@ impl Message {
             content: content.into(),
             tool_call_id: None,
             tool_name: None,
+            tool_calls: Vec::new(),
         }
     }
 
@@ -51,6 +55,13 @@ impl Message {
     ) -> Self {
         self.tool_call_id = Some(tool_call_id.into());
         self.tool_name = Some(tool_name.into());
+        self
+    }
+
+    /// Asocia tool_calls a este mensaje (solo para role Assistant).
+    #[must_use]
+    pub fn with_tool_calls(mut self, tool_calls: Vec<ToolCall>) -> Self {
+        self.tool_calls = tool_calls;
         self
     }
 }
