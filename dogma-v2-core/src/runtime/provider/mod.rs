@@ -7,8 +7,8 @@
 pub mod openai;
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use dogma_v2_common::Result;
+use serde::{Deserialize, Serialize};
 
 /// Rol de un mensaje en la conversación.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,12 +130,16 @@ pub struct TokenUsage {
 pub trait LLMProvider: Send + Sync {
     /// Envía un historial de mensajes al LLM y devuelve la respuesta.
     ///
+    /// `tools` son las especificaciones de herramientas en formato OpenAI
+    /// (tipo `function` con name/description/parameters). Si está vacío,
+    /// el LLM no tendrá herramientas disponibles.
+    ///
     /// # Errors
     ///
     /// Devuelve `Error::Network` si hay problemas de conexión,
     /// `Error::Api` si el proveedor devuelve un error HTTP,
     /// `Error::RateLimited` si se excede el rate limit.
-    async fn chat(&self, messages: &[Message]) -> Result<LLMResponse>;
+    async fn chat(&self, messages: &[Message], tools: &[serde_json::Value]) -> Result<LLMResponse>;
 
     /// Envía un historial de mensajes y devuelve un stream de la respuesta.
     ///
@@ -144,8 +148,10 @@ pub trait LLMProvider: Send + Sync {
     async fn chat_stream(
         &self,
         messages: &[Message],
-    ) -> Result<tokio::sync::mpsc::Receiver<std::result::Result<String, dogma_v2_common::Error>>> {
-        let response = self.chat(messages).await?;
+        tools: &[serde_json::Value],
+    ) -> Result<tokio::sync::mpsc::Receiver<std::result::Result<String, dogma_v2_common::Error>>>
+    {
+        let response = self.chat(messages, tools).await?;
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         let _ = tx.send(Ok(response.content)).await;
         // Drop tx to close the receiver

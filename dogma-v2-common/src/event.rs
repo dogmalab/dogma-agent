@@ -108,11 +108,7 @@ pub struct Event {
 
 impl Event {
     /// Crea un nuevo evento con la hora actual.
-    pub fn new(
-        event_type: EventType,
-        severity: EventSeverity,
-        content: impl Into<String>,
-    ) -> Self {
+    pub fn new(event_type: EventType, severity: EventSeverity, content: impl Into<String>) -> Self {
         Self {
             event_type,
             timestamp: Utc::now(),
@@ -132,11 +128,7 @@ impl Event {
 
     /// Añade una entrada de metadato al evento.
     #[must_use]
-    pub fn with_metadata(
-        mut self,
-        key: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
+    pub fn with_metadata(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.metadata.insert(key.into(), value.into());
         self
     }

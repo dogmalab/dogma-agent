@@ -108,11 +108,7 @@ impl Compressor {
     /// # Errors
     ///
     /// Devuelve error si la búsqueda vectorial falla.
-    pub async fn search_semantic(
-        &self,
-        _query: &str,
-        _limit: usize,
-    ) -> Result<Vec<SemanticMatch>> {
+    pub async fn search_semantic(&self, _query: &str, _limit: usize) -> Result<Vec<SemanticMatch>> {
         // FIXME: Requiere integración con el embedder de dogma-vdb.
         // Por ahora es un placeholder que devuelve resultados vacíos.
         //

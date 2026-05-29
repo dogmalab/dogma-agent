@@ -14,13 +14,19 @@
 //! exclusivamente el stream de eventos NDJSON línea por línea.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use dogma_v2_common::event::{Event, EventSeverity, EventType};
 use dogma_v2_common::Result;
+use dogma_v2_common::event::{Event, EventSeverity, EventType};
+use dogma_v2_core::RuntimeLoop;
+use dogma_v2_core::runtime::loop_handle::LoopConfig;
+use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
 use dogma_v2_core::state::session::SessionManager;
 use dogma_v2_core::tools::create_survival_tools;
 use tracing::{error, info};
+
+mod config;
 
 /// Dogma 2.0 — Agente IA minimalista con estado en dogma-vdb.
 #[derive(Parser, Debug)]
@@ -62,8 +68,7 @@ fn main() {
     // Inicializar tracing (siempre a stderr)
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -110,15 +115,17 @@ fn resolve_data_dir(raw: &str) -> Result<PathBuf> {
 async fn cmd_init(data_dir: &PathBuf, json_mode: bool) -> Result<()> {
     emit_event(
         json_mode,
-        &Event::new(EventType::System, EventSeverity::Info, "Initializing Dogma 2.0 environment"),
+        &Event::new(
+            EventType::System,
+            EventSeverity::Info,
+            "Initializing Dogma 2.0 environment",
+        ),
     );
 
     // Crear directorio de datos
-    std::fs::create_dir_all(data_dir).map_err(|e| {
-        dogma_v2_common::error::Error::Io {
-            path: data_dir.clone(),
-            source: e,
-        }
+    std::fs::create_dir_all(data_dir).map_err(|e| dogma_v2_common::error::Error::Io {
+        path: data_dir.clone(),
+        source: e,
     })?;
 
     // Inicializar session manager (crea sessions.vdb)
@@ -140,56 +147,63 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool) -> Result<()> {
 async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<()> {
     emit_event(
         json_mode,
-        &Event::new(EventType::System, EventSeverity::Info, "Starting chat session"),
-    );
-
-    // Inicializar session manager
-    let mut session = SessionManager::open(data_dir)?;
-    let session_id = session.create_session("dogma-v2")?;
-
-    // Crear herramientas de supervivencia
-    let _tools = create_survival_tools();
-
-    // FIXME: Se necesita un proveedor LLM real aquí. Por ahora
-    // registramos el inicio y salida con un mensaje informativo.
-    //
-    // let provider = Arc::new(MyLLMProvider::new(config));
-    // let loop_config = LoopConfig::default();
-    // let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
-    // let response = runtime.run(prompt, &session_id).await?;
-
-    emit_event(
-        json_mode,
-        &Event::new(EventType::System, EventSeverity::Warning,
-            "Chat mode requires an LLM provider. Use `dogma provider set` or configure via environment.",
+        &Event::new(
+            EventType::System,
+            EventSeverity::Info,
+            "Starting chat session",
         ),
     );
 
-    // Emitir el prompt como evento
+    // ── 1. Cargar configuración del proveedor ──────────────────────
+    let provider_config =
+        config::load_provider_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
+    // ── 2. Crear proveedor LLM ─────────────────────────────────────
+    let provider = Arc::new(OpenAiProvider::new(provider_config)?);
+
+    // ── 3. Inicializar sesión ──────────────────────────────────────
+    let mut session = SessionManager::open(data_dir)?;
+    let session_id = session.create_session("dogma-v2")?;
+
     emit_event(
         json_mode,
-        &Event::new(EventType::Message, EventSeverity::Info, prompt)
+        &Event::new(
+            EventType::System,
+            EventSeverity::Info,
+            format!("Session: {session_id}"),
+        )
+        .with_session_id(&session_id),
+    );
+
+    // ── 4. Crear herramientas de supervivencia ─────────────────────
+    let tools = create_survival_tools();
+
+    // ── 5. Crear y ejecutar el RuntimeLoop ─────────────────────────
+    let loop_config = LoopConfig::default();
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+
+    let response = runtime.run(prompt, &session_id).await?;
+
+    // ── 6. Emitir resultado ────────────────────────────────────────
+    emit_event(
+        json_mode,
+        &Event::new(EventType::Message, EventSeverity::Success, &response)
             .with_session_id(&session_id)
-            .with_metadata("role", "user"),
+            .with_metadata("role", "assistant"),
     );
 
-    // Emitir placeholder de respuesta
     emit_event(
         json_mode,
-        &Event::new(EventType::Message, EventSeverity::Info,
-            "Chat session created. Configure an LLM provider to start interacting.",
-        ).with_session_id(&session_id)
-        .with_metadata("role", "assistant"),
+        &Event::new(
+            EventType::Done,
+            EventSeverity::Success,
+            "Chat session completed",
+        )
+        .with_session_id(&session_id),
     );
 
-    // Si no es modo JSON, mostrar en humano
     if !json_mode {
-        println!("Session ID: {session_id}");
-        println!("Data dir: {}", data_dir.display());
         println!();
-        println!("Chat mode ready. Provider configuration needed.");
-        println!("  Set DOGMA_API_KEY and DOGMA_BASE_URL environment variables");
-        println!("  or use: dogma provider set <provider> <api_key>");
+        println!("{response}");
     }
 
     Ok(())
@@ -207,8 +221,12 @@ async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool) -> Result<()>
 
     emit_event(
         json_mode,
-        &Event::new(EventType::PlanProgress, EventSeverity::Info, &format!("Planning task: {task}"))
-            .with_session_id(&session_id),
+        &Event::new(
+            EventType::PlanProgress,
+            EventSeverity::Info,
+            format!("Planning task: {task}"),
+        )
+        .with_session_id(&session_id),
     );
 
     // Placeholder: el planificador real vendrá en una fase posterior

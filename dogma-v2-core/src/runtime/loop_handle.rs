@@ -14,8 +14,8 @@ use crate::runtime::provider::{LLMProvider, LLMResponse, Message, MessageRole};
 use crate::state::session::SessionManager;
 use crate::tools::{Tool, ToolRegistry};
 use dogma_v2_common::Result;
-use tracing::{debug, error, info, warn};
 use parking_lot::RwLock;
+use tracing::{debug, error, info, warn};
 
 /// Configuración del runtime loop.
 #[derive(Debug, Clone)]
@@ -91,9 +91,7 @@ impl RuntimeLoop {
         // Persist user message in session
         {
             let mut session = self.session.write();
-            session
-                .append_message(session_id, MessageRole::User, prompt)
-                .await?;
+            session.append_message(session_id, MessageRole::User, prompt)?;
         }
 
         let result = self.tool_loop(session_id).await;
@@ -101,9 +99,7 @@ impl RuntimeLoop {
         // Persist final result
         if let Ok(ref final_content) = result {
             let mut session = self.session.write();
-            session
-                .append_message(session_id, MessageRole::Assistant, final_content)
-                .await?;
+            session.append_message(session_id, MessageRole::Assistant, final_content)?;
         }
 
         result
@@ -135,19 +131,31 @@ impl RuntimeLoop {
                 state.messages.clone()
             };
 
-            debug!("Sending {} messages to LLM", messages.len());
+            // Extraer tool specs del registro local y pasarlas al provider
+            let tool_specs = {
+                let tools = self.tools.read();
+                tools.tool_specs()
+            };
 
-            let response: LLMResponse = self.provider.chat(&messages).await.map_err(|e| {
-                error!("LLM provider error: {e}");
-                e
-            })?;
+            debug!(
+                "Sending {} messages + {} tools to LLM",
+                messages.len(),
+                tool_specs.len()
+            );
+
+            let response: LLMResponse =
+                self.provider
+                    .chat(&messages, &tool_specs)
+                    .await
+                    .map_err(|e| {
+                        error!("LLM provider error: {e}");
+                        e
+                    })?;
 
             // Persist assistant response
             {
                 let mut session = self.session.write();
-                session
-                    .append_message(session_id, MessageRole::Assistant, &response.content)
-                    .await?;
+                session.append_message(session_id, MessageRole::Assistant, &response.content)?;
             }
 
             // If no tool calls, we're done
@@ -158,45 +166,63 @@ impl RuntimeLoop {
 
             // Process tool calls
             let tool_calls = response.tool_calls.clone();
-            let mut state = self.state.write();
-            state.iteration += 1;
 
-            // Add assistant message with tool calls to local state
-            state
-                .messages
-                .push(Message::new(MessageRole::Assistant, &response.content));
+            // Increment iteration and add assistant message under state lock,
+            // then release before any async work
+            {
+                let mut state = self.state.write();
+                state.iteration += 1;
+                state
+                    .messages
+                    .push(Message::new(MessageRole::Assistant, &response.content));
+            }
 
             for tc in &tool_calls {
                 info!("Executing tool: {} (id={})", tc.name, tc.id);
 
-                let tool_result = {
+                // Get tool reference under tools lock, release before async call
+                let tool_ref = {
                     let tools = self.tools.read();
-                    match tools.execute(&tc.name, &tc.arguments).await {
-                        Ok(output) => output,
+                    tools.get_tool(&tc.name)
+                };
+
+                let tool_result: String = match tool_ref {
+                    Some(tool) => match serde_json::from_str(&tc.arguments) {
+                        Ok(args) => match tool.call(&args).await {
+                            Ok(output) => output,
+                            Err(e) => {
+                                error!("Tool {} failed: {e}", tc.name);
+                                format!("error: {e}")
+                            }
+                        },
                         Err(e) => {
-                            error!("Tool {} failed: {e}", tc.name);
-                            format!("error: {e}")
+                            let msg = format!("error: invalid arguments for {}: {}", tc.name, e);
+                            error!("{msg}");
+                            msg
                         }
+                    },
+                    None => {
+                        let msg = format!("tool not found: {}", tc.name);
+                        error!("{msg}");
+                        msg
                     }
                 };
 
-                // Persist tool call and result
+                // Persist tool result under session lock
                 {
                     let mut session = self.session.write();
-                    session
-                        .append_tool_result(session_id, &tc.name, &tc.id, &tool_result)
-                        .await?;
+                    session.append_tool_result(session_id, &tc.name, &tc.id, &tool_result)?;
                 }
 
-                // Add tool result message to local state
-                state.messages.push(
-                    Message::new(MessageRole::Tool, &tool_result)
-                        .with_tool_result(&tc.id, &tc.name),
-                );
+                // Add result to local state
+                {
+                    let mut state = self.state.write();
+                    state.messages.push(
+                        Message::new(MessageRole::Tool, &tool_result)
+                            .with_tool_result(&tc.id, &tc.name),
+                    );
+                }
             }
-
-            // Release state lock before next iteration
-            drop(state);
         }
     }
 

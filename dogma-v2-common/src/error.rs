@@ -18,7 +18,6 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum Error {
     // ── Infrastructure ──────────────────────────────────────────────
-
     #[error("network error: {detail}")]
     Network {
         detail: String,
@@ -30,13 +29,9 @@ pub enum Error {
     RateLimited { retry_after_secs: u64 },
 
     #[error("API error ({status_code}): {detail}")]
-    Api {
-        status_code: u16,
-        detail: String,
-    },
+    Api { status_code: u16, detail: String },
 
     // ── Execution ───────────────────────────────────────────────────
-
     #[error("execution error: {0}")]
     Execution(String),
 
@@ -50,7 +45,6 @@ pub enum Error {
     Serialization(#[from] serde_json::Error),
 
     // ── Fatal ───────────────────────────────────────────────────────
-
     #[error("I/O error on {path}: {source}")]
     Io {
         path: PathBuf,
@@ -72,19 +66,31 @@ impl Error {
     /// Devuelve `true` si el error es de categoría **Infrastructure**.
     #[must_use]
     pub fn is_infrastructure(&self) -> bool {
-        matches!(self, Self::Network { .. } | Self::RateLimited { .. } | Self::Api { .. })
+        matches!(
+            self,
+            Self::Network { .. } | Self::RateLimited { .. } | Self::Api { .. }
+        )
     }
 
     /// Devuelve `true` si el error es de categoría **Execution**.
     #[must_use]
     pub fn is_execution(&self) -> bool {
-        matches!(self, Self::Execution(_) | Self::ToolNotFound(_) | Self::Validation(_) | Self::Serialization(_))
+        matches!(
+            self,
+            Self::Execution(_)
+                | Self::ToolNotFound(_)
+                | Self::Validation(_)
+                | Self::Serialization(_)
+        )
     }
 
     /// Devuelve `true` si el error es de categoría **Fatal**.
     #[must_use]
     pub fn is_fatal(&self) -> bool {
-        matches!(self, Self::Io { .. } | Self::StorageCorrupted(_) | Self::Internal(_))
+        matches!(
+            self,
+            Self::Io { .. } | Self::StorageCorrupted(_) | Self::Internal(_)
+        )
     }
 }
 

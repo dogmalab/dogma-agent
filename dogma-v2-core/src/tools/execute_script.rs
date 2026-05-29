@@ -72,8 +72,7 @@ impl Tool for ExecuteScriptTool {
             ));
         }
 
-        let binary = resolve_binary(lang)
-            .ok_or_else(|| format!("unsupported language: {lang}"))?;
+        let binary = resolve_binary(lang).ok_or_else(|| format!("unsupported language: {lang}"))?;
 
         // Ejecutar el script como código inline
         let output = tokio::time::timeout(

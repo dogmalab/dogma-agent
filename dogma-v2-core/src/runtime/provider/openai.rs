@@ -13,9 +13,9 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dogma_v2_common::error::Error as DogmaError;
 use dogma_v2_common::Result;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER};
+use dogma_v2_common::error::Error as DogmaError;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER};
 use serde_json::Value;
 use tracing::{debug, trace, warn};
 
@@ -123,19 +123,25 @@ impl OpenAiProvider {
     }
 
     /// Construye el JSON body para `/v1/chat/completions`.
-    fn build_request_body(&self, messages: &[Message]) -> Value {
+    ///
+    /// Si `tools` contiene especificaciones en formato OpenAI
+    /// (`{"type":"function","function":{...}}`), las inyecta en el
+    /// body para que el LLM pueda invocarlas.
+    fn build_request_body(&self, messages: &[Message], tools: &[Value]) -> Value {
         let msgs: Vec<Value> = messages.iter().map(Self::serialize_message).collect();
 
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "model": self.config.model,
             "messages": msgs,
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
         });
 
-        // Añadir herramientas si hay tools registradas (se pasa desde el
-        // RuntimeLoop). Por ahora no se inyectan aquí; el control se hará
-        // desde el loop.
+        // Inyectar herramientas si hay — formato estándar OpenAI
+        if !tools.is_empty() {
+            body["tools"] = serde_json::Value::Array(tools.to_vec());
+        }
+
         body
     }
 
@@ -178,9 +184,9 @@ impl LLMProvider for OpenAiProvider {
         &self.config
     }
 
-    async fn chat(&self, messages: &[Message]) -> Result<LLMResponse> {
+    async fn chat(&self, messages: &[Message], tools: &[Value]) -> Result<LLMResponse> {
         let url = self.chat_url();
-        let body = self.build_request_body(messages);
+        let body = self.build_request_body(messages, tools);
 
         trace!(
             "Sending request to {url}: {} messages, model={}",
@@ -227,7 +233,9 @@ impl LLMProvider for OpenAiProvider {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(5);
-            return Err(DogmaError::RateLimited { retry_after_secs: retry_after });
+            return Err(DogmaError::RateLimited {
+                retry_after_secs: retry_after,
+            });
         } else {
             let status_text = status.canonical_reason().unwrap_or("unknown");
             // Intentar extraer mensaje de error del body
@@ -279,9 +287,7 @@ impl LLMProvider for OpenAiProvider {
             .unwrap_or(&[]);
 
         let (content, tool_calls) = if let Some(first_choice) = choices.first() {
-            let msg = first_choice
-                .get("message")
-                .unwrap_or(&Value::Null);
+            let msg = first_choice.get("message").unwrap_or(&Value::Null);
 
             let content = msg
                 .get("content")
@@ -301,13 +307,10 @@ impl LLMProvider for OpenAiProvider {
         };
 
         // ── 5. Parseo ultra-defensivo de usage ────────────────────────
-        let usage = root
-            .get("usage")
-            .map(Self::parse_usage)
-            .unwrap_or_else(|| {
-                trace!("LLM response missing 'usage' field");
-                TokenUsage::default()
-            });
+        let usage = root.get("usage").map(Self::parse_usage).unwrap_or_else(|| {
+            trace!("LLM response missing 'usage' field");
+            TokenUsage::default()
+        });
 
         debug!(
             "LLM response: content_len={}, tool_calls={}, tokens={}",
@@ -376,8 +379,15 @@ impl OpenAiProvider {
                 continue;
             }
 
-            trace!("Parsed tool_call: id={id}, name={name}, args_len={}", arguments.len());
-            result.push(super::ToolCall { id, name, arguments });
+            trace!(
+                "Parsed tool_call: id={id}, name={name}, args_len={}",
+                arguments.len()
+            );
+            result.push(super::ToolCall {
+                id,
+                name,
+                arguments,
+            });
         }
 
         result
@@ -425,7 +435,6 @@ impl OpenAiProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::provider::ToolCall;
 
     fn sample_config() -> ProviderConfig {
         ProviderConfig {
@@ -457,7 +466,10 @@ mod tests {
     #[test]
     fn test_chat_url() {
         let provider = OpenAiProvider::new(sample_config()).unwrap();
-        assert_eq!(provider.chat_url(), "https://api.openai.com/v1/chat/completions");
+        assert_eq!(
+            provider.chat_url(),
+            "https://api.openai.com/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -465,7 +477,10 @@ mod tests {
         let mut cfg = sample_config();
         cfg.base_url = "https://localhost:11434/v1/".into();
         let provider = OpenAiProvider::new(cfg).unwrap();
-        assert_eq!(provider.chat_url(), "https://localhost:11434/v1/chat/completions");
+        assert_eq!(
+            provider.chat_url(),
+            "https://localhost:11434/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -478,8 +493,8 @@ mod tests {
 
     #[test]
     fn test_serialize_message_tool() {
-        let msg = Message::new(MessageRole::Tool, "result")
-            .with_tool_result("call_123", "read_file");
+        let msg =
+            Message::new(MessageRole::Tool, "result").with_tool_result("call_123", "read_file");
         let json = OpenAiProvider::serialize_message(&msg);
         assert_eq!(json["role"], "tool");
         assert_eq!(json["content"], "result");
@@ -583,7 +598,7 @@ mod tests {
             Message::new(MessageRole::System, "You are helpful"),
             Message::new(MessageRole::User, "Hi!"),
         ];
-        let body = provider.build_request_body(&msgs);
+        let body = provider.build_request_body(&msgs, &[]);
 
         assert_eq!(body["model"], "gpt-4o");
         assert_eq!(body["messages"].as_array().map(|a| a.len()), Some(2));

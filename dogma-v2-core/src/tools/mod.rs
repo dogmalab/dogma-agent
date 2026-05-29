@@ -66,6 +66,11 @@ impl ToolRegistry {
         self.tools.insert(name, Arc::from(tool));
     }
 
+    /// Devuelve una referencia clonada a una herramienta por nombre.
+    pub fn get_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
+    }
+
     /// Ejecuta una herramienta por nombre con argumentos JSON.
     ///
     /// # Errors

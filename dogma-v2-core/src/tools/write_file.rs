@@ -65,7 +65,10 @@ impl Tool for WriteFileTool {
 
         std::fs::write(path, content).map_err(|e| format!("cannot write {path}: {e}"))?;
 
-        Ok(format!("successfully wrote {} bytes to {path}", content.len()))
+        Ok(format!(
+            "successfully wrote {} bytes to {path}",
+            content.len()
+        ))
     }
 }
 

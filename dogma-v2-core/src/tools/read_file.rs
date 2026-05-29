@@ -54,8 +54,8 @@ impl Tool for ReadFileTool {
             return Err(format!("{path} is a directory, not a file"));
         }
 
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("cannot read {path}: {e}"))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
 
         Ok(content)
     }

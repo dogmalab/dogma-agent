@@ -29,7 +29,7 @@ tracing.workspace = true
 parking_lot.workspace = true
 
 # HTTP client (LLM provider)
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 
 # Utilities
 uuid.workspace = true

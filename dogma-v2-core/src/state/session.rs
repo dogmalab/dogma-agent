@@ -49,23 +49,23 @@ impl SessionManager {
     /// Devuelve `Error::Io` si no se puede abrir o crear el archivo.
     pub fn open(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path: PathBuf = base_path.into();
-        std::fs::create_dir_all(&base_path).map_err(|e| {
-            dogma_v2_common::error::Error::Io {
-                path: base_path.clone(),
-                source: e,
-            }
+        std::fs::create_dir_all(&base_path).map_err(|e| dogma_v2_common::error::Error::Io {
+            path: base_path.clone(),
+            source: e,
         })?;
 
         let vdb_path = base_path.join("sessions.vdb");
-        let collection = Collection::open(&vdb_path).map_err(|e| {
-            dogma_v2_common::error::Error::Io {
+        let collection =
+            Collection::open(&vdb_path).map_err(|e| dogma_v2_common::error::Error::Io {
                 path: vdb_path,
-                source: std::io::Error::new(std::io::ErrorKind::Other, e.to_string()),
-            }
-        })?;
+                source: std::io::Error::other(e.to_string()),
+            })?;
 
         info!("SessionManager opened at {}", base_path.display());
-        Ok(Self { collection, base_path })
+        Ok(Self {
+            collection,
+            base_path,
+        })
     }
 
     /// Crea una nueva sesión y devuelve su ID.
@@ -81,12 +81,12 @@ impl SessionManager {
             .metadata("session_id", &session_id)
             .metadata("model", model)
             .metadata("sequence", "0")
-            .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+            .metadata("created_at", chrono::Utc::now().to_rfc3339())
             .build();
 
-        self.collection.insert(doc).map_err(|e| {
-            dogma_v2_common::error::Error::StorageCorrupted(e.to_string())
-        })?;
+        self.collection
+            .insert(doc)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
 
         debug!("Created session {session_id}");
         Ok(session_id)
@@ -97,7 +97,7 @@ impl SessionManager {
     /// # Errors
     ///
     /// Devuelve error de I/O si no se puede persistir.
-    pub async fn append_message(
+    pub fn append_message(
         &mut self,
         session_id: &str,
         role: MessageRole,
@@ -117,14 +117,14 @@ impl SessionManager {
             .metadata("node_type", "Message")
             .metadata("session_id", session_id)
             .metadata("role", role_str)
-            .metadata("sequence", &seq.to_string())
+            .metadata("sequence", seq.to_string())
             .metadata("edge_type", "NEXT")
-            .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+            .metadata("created_at", chrono::Utc::now().to_rfc3339())
             .build();
 
-        self.collection.insert(doc).map_err(|e| {
-            dogma_v2_common::error::Error::StorageCorrupted(e.to_string())
-        })?;
+        self.collection
+            .insert(doc)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
 
         debug!("Appended message {node_id} to session {session_id}");
         Ok(node_id)
@@ -135,7 +135,7 @@ impl SessionManager {
     /// # Errors
     ///
     /// Devuelve error de I/O si no se puede persistir.
-    pub async fn append_tool_result(
+    pub fn append_tool_result(
         &mut self,
         session_id: &str,
         tool_name: &str,
@@ -150,14 +150,14 @@ impl SessionManager {
             .metadata("session_id", session_id)
             .metadata("tool_name", tool_name)
             .metadata("tool_call_id", tool_call_id)
-            .metadata("sequence", &seq.to_string())
+            .metadata("sequence", seq.to_string())
             .metadata("edge_type", "TRIGGERED")
-            .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+            .metadata("created_at", chrono::Utc::now().to_rfc3339())
             .build();
 
-        self.collection.insert(doc).map_err(|e| {
-            dogma_v2_common::error::Error::StorageCorrupted(e.to_string())
-        })?;
+        self.collection
+            .insert(doc)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
 
         debug!("Appended tool result {node_id} to session {session_id}");
         Ok(node_id)
@@ -203,18 +203,21 @@ mod tests {
     fn test_create_session() {
         let dir = tempdir().expect("temp dir");
         let mut manager = SessionManager::open(dir.path()).expect("open session manager");
-        let session_id = manager.create_session("test-model").expect("create session");
+        let session_id = manager
+            .create_session("test-model")
+            .expect("create session");
         assert!(session_id.starts_with("session-"));
     }
 
-    #[tokio::test]
-    async fn test_append_message() {
+    #[test]
+    fn test_append_message() {
         let dir = tempdir().expect("temp dir");
         let mut manager = SessionManager::open(dir.path()).expect("open session manager");
-        let session_id = manager.create_session("test-model").expect("create session");
+        let session_id = manager
+            .create_session("test-model")
+            .expect("create session");
         let msg_id = manager
             .append_message(&session_id, MessageRole::User, "hello")
-            .await
             .expect("append message");
         assert!(msg_id.starts_with("msg-"));
     }
