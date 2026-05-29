@@ -135,21 +135,22 @@ impl SearchMemoryTool {
 
     /// Formatea los resultados como texto para el LLM, respetando
     /// el límite de `max_tokens` (aproximado como caracteres × 4).
-    fn format_results(matches: &[&SemanticMatch], max_chars: usize) -> String {
-        if matches.is_empty() {
+    /// Muestra el hybrid score (no el raw cosine) para que el LLM
+    /// entienda por qué apareció cada resultado.
+    fn format_results(scored: &[(f32, &SemanticMatch)], max_chars: usize) -> String {
+        if scored.is_empty() {
             return "No relevant context found in memory.".to_string();
         }
 
         let mut output = String::new();
         output.push_str("── Relevant context from agent memory ──\n\n");
 
-        for (i, m) in matches.iter().enumerate() {
+        for (i, (hybrid_score, m)) in scored.iter().enumerate() {
             let label = match m.created_at.as_deref().unwrap_or("unknown") {
                 ts if ts.len() >= 10 => {
-                    // Intentar extraer fecha legible del ISO-8601
-                    format!("[{}] #{}, score={:.2}", &ts[..10], i + 1, m.score)
+                    format!("[{}] #{}, score={:.2}", &ts[..10], i + 1, hybrid_score)
                 }
-                ts => format!("[{}] #{}, score={:.2}", ts, i + 1, m.score),
+                ts => format!("[{}] #{}, score={:.2}", ts, i + 1, hybrid_score),
             };
 
             let entry = format!("{label}\n{}\n\n", m.content);
@@ -249,7 +250,7 @@ impl Tool for SearchMemoryTool {
             .and_then(Value::as_f64)
             .map_or(0.3, |v| v.clamp(0.0, 1.0) as f32);
 
-        let _depth = args
+        let depth = args
             .get("depth")
             .and_then(Value::as_i64)
             .map_or(0, |v| v.clamp(0, 5) as usize);
@@ -319,7 +320,7 @@ impl Tool for SearchMemoryTool {
         // Aplicar depth: adyacencia en grafo
         // Por ahora v1: depth > 0 agrega vecinos que compartan parent_id
         // (implementación completa de BFS vendrá en versión futura)
-        if _depth > 0 {
+        if depth > 0 {
             let parent_ids: Vec<Option<&str>> = raw_results
                 .iter()
                 .filter_map(|m| m.parent_id.as_deref())
@@ -343,11 +344,8 @@ impl Tool for SearchMemoryTool {
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         }
 
-        // Extraer solo los SemanticMatch, ordenados
-        let ordered: Vec<&SemanticMatch> = scored.into_iter().map(|(_, m)| m).collect();
-
-        // Formatear y devolver
-        let result = Self::format_results(&ordered, max_chars);
+        // Formatear y devolver — mostrar el hybrid score, no el raw cosine
+        let result = Self::format_results(&scored, max_chars);
         Ok(result)
     }
 }
@@ -466,7 +464,8 @@ mod tests {
 
     #[test]
     fn test_format_results_empty() {
-        let result = SearchMemoryTool::format_results(&[], 1000);
+        let scored: Vec<(f32, &SemanticMatch)> = vec![];
+        let result = SearchMemoryTool::format_results(&scored, 1000);
         assert_eq!(result, "No relevant context found in memory.");
     }
 
@@ -475,8 +474,8 @@ mod tests {
         let matches = vec![
             make_match("id-1", "A very long content that should be truncated by the formatter", 0.9, None, None),
         ];
-        let refs: Vec<&SemanticMatch> = matches.iter().collect();
-        let result = SearchMemoryTool::format_results(&refs, 20);
+        let scored: Vec<(f32, &SemanticMatch)> = matches.iter().map(|m| (0.5, m)).collect();
+        let result = SearchMemoryTool::format_results(&scored, 20);
         // Should be truncated since content is longer than 20 chars
         assert!(result.contains("truncated"));
     }
