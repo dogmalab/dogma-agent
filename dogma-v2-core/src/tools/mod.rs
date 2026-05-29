@@ -1,16 +1,15 @@
-//! # Tools — Las 3 herramientas de supervivencia
+//! # Tools — Herramientas de supervivencia + búsqueda semántica
 //!
-//! Este módulo registra únicamente las herramientas esenciales:
+//! Este módulo registra las herramientas del agente:
 //!
 //! 1. `read_file(path)` — Lee el contenido de un archivo.
 //! 2. `write_file(path, content)` — Escribe contenido en un archivo.
 //! 3. `execute_script(lang, code)` — Ejecuta scripts ligeros.
-//!
-//! Cada herramienta implementa el trait `Tool` y se registra en el
-//! `ToolRegistry` del runtime.
+//! 4. `search_memory(query, ...)` — Búsqueda semántica en la memoria del agente.
 
 mod execute_script;
 mod read_file;
+mod search_memory;
 mod write_file;
 
 use async_trait::async_trait;
@@ -20,6 +19,7 @@ use tracing::debug;
 
 pub use execute_script::ExecuteScriptTool;
 pub use read_file::ReadFileTool;
+pub use search_memory::SearchMemoryTool;
 pub use write_file::WriteFileTool;
 
 /// Resultado de la ejecución de una herramienta.

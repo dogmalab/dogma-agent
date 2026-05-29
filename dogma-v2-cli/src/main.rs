@@ -24,6 +24,7 @@ use dogma_v2_core::runtime::loop_handle::LoopConfig;
 use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
 use dogma_v2_core::state::session::SessionManager;
 use dogma_v2_core::tools::create_survival_tools;
+use dogma_v2_core::tools::SearchMemoryTool;
 use tracing::{error, info};
 
 mod config;
@@ -180,6 +181,10 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<(
     // ── 5. Crear y ejecutar el RuntimeLoop ─────────────────────────
     let loop_config = LoopConfig::default();
     let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+
+    // Registrar herramienta de búsqueda semántica activa
+    let memory_search = SearchMemoryTool::new(runtime.session_handle());
+    runtime.register_tool(Box::new(memory_search));
 
     let response = runtime.run(prompt, &session_id).await?;
 

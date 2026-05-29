@@ -165,6 +165,10 @@ pub struct SemanticMatch {
     pub score: f32,
     /// Sesión de origen.
     pub session_id: String,
+    /// Timestamp ISO-8601 de creación del nodo (para scoring de recencia).
+    pub created_at: Option<String>,
+    /// ID del nodo padre (para scoring de adyacencia en grafo).
+    pub parent_id: Option<String>,
 }
 
 /// Trunca un string a un máximo de caracteres, añadiendo "..." si

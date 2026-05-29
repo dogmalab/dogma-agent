@@ -201,69 +201,30 @@ async fn test_runtime_loop_with_max_iterations() {
 }
 
 #[tokio::test]
-async fn test_runtime_loop_sliding_window() {
-    // Verificar que el loop funciona con una ventana deslizante pequeña
+async fn test_runtime_loop_default_config() {
+    // Verify default loop config works without sliding window or semantic lookup
     let dir = tempfile::tempdir().expect("temp dir");
 
     let mut session = SessionManager::open(dir.path()).expect("open session");
     let session_id = session
-        .create_session("sliding-window-test")
+        .create_session("default-config-test")
         .expect("create session");
 
     let provider = Arc::new(MockLLMProvider::new(
         test_provider_config(),
-        "sliding window response",
+        "default config response",
     ));
     let tools = create_survival_tools();
-    let loop_config = LoopConfig {
-        max_hot_messages: 2, // ventana muy pequeña
-        ..Default::default()
-    };
+    let loop_config = LoopConfig::default();
 
     let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
 
     let response = runtime
-        .run("Test sliding window", &session_id)
+        .run("Test default config", &session_id)
         .await
-        .expect("runtime loop with sliding window should succeed");
+        .expect("runtime loop should succeed");
 
-    assert_eq!(response, "sliding window response");
-}
-
-#[tokio::test]
-async fn test_runtime_loop_sliding_window_persists_messages() {
-    // Verificar que los mensajes se persisten aunque estén fuera de la
-    // ventana caliente (max_hot_messages = 2).
-    let dir = tempfile::tempdir().expect("temp dir");
-
-    let mut session = SessionManager::open(dir.path()).expect("open session");
-    let session_id = session
-        .create_session("sliding-persist")
-        .expect("create session");
-
-    let provider = Arc::new(MockLLMProvider::new(
-        test_provider_config(),
-        "persist test",
-    ));
-    let tools = create_survival_tools();
-    let loop_config = LoopConfig {
-        max_hot_messages: 2,
-        ..Default::default()
-    };
-
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
-    runtime
-        .run("First call", &session_id)
-        .await
-        .expect("first call");
-    runtime
-        .run("Second call", &session_id)
-        .await
-        .expect("second call");
-
-    // Re-abrir la sesión — los archivos deben existir y ser válidos
-    let _reopened =
-        SessionManager::open(dir.path()).expect("reopen session after sliding window");
+    assert_eq!(response, "default config response");
 }
 
 // ---------------------------------------------------------------------------

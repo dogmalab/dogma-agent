@@ -233,25 +233,83 @@ impl SessionManager {
             return Ok(Vec::new());
         }
 
-        let results = self.collection.search_filtered(
-            &embedding,
-            k,
-            &|doc: &Document| -> bool {
+        let results = self
+            .collection
+            .search_filtered(&embedding, k, &|doc: &Document| -> bool {
                 doc.metadata_val("session_id") == Some(session_id)
                     && matches!(
                         doc.metadata_val("node_type"),
                         Some("Message") | Some("ToolResult") | Some("Chunk")
                     )
-            },
-        );
+            });
 
         Ok(results
             .into_iter()
-            .map(|sd| super::compressor::SemanticMatch {
-                node_id: sd.document.id,
-                content: sd.document.text,
-                score: sd.score,
-                session_id: session_id.to_string(),
+            .map(|sd| {
+                let created_at = sd.document.metadata_val("created_at").map(String::from);
+                let parent_id = sd.document.metadata_val("parent_id").map(String::from);
+                super::compressor::SemanticMatch {
+                    node_id: sd.document.id,
+                    content: sd.document.text,
+                    score: sd.score,
+                    session_id: session_id.to_string(),
+                    created_at,
+                    parent_id,
+                }
+            })
+            .collect())
+    }
+
+    /// Busca contexto semánticamente similar en TODAS las sesiones
+    /// (sin filtrar por `session_id`).
+    ///
+    /// Útil para la herramienta `search_memory` cuando el LLM quiere
+    /// recuperar información de cualquier sesión pasada.
+    pub fn search_similar_global(
+        &self,
+        query: &str,
+        k: usize,
+    ) -> Result<Vec<super::compressor::SemanticMatch>> {
+        let embedder = match &self.embedder {
+            Some(e) => e,
+            None => {
+                debug!("Semantic search requested but no embedder configured");
+                return Ok(Vec::new());
+            }
+        };
+
+        let embedding = embedder.embed(query).map_err(|e| {
+            dogma_v2_common::error::Error::Internal(format!("embedding failed: {e}"))
+        })?;
+
+        if embedding.is_empty() {
+            debug!("Embedder returned empty vector — skipping search");
+            return Ok(Vec::new());
+        }
+
+        let results = self
+            .collection
+            .search_filtered(&embedding, k, &|doc: &Document| -> bool {
+                matches!(
+                    doc.metadata_val("node_type"),
+                    Some("Message") | Some("ToolResult") | Some("Chunk")
+                )
+            });
+
+        Ok(results
+            .into_iter()
+            .map(|sd| {
+                let session_id = sd.document.metadata_val("session_id").unwrap_or("").to_string();
+                let created_at = sd.document.metadata_val("created_at").map(String::from);
+                let parent_id = sd.document.metadata_val("parent_id").map(String::from);
+                super::compressor::SemanticMatch {
+                    node_id: sd.document.id,
+                    content: sd.document.text,
+                    score: sd.score,
+                    session_id,
+                    created_at,
+                    parent_id,
+                }
             })
             .collect())
     }

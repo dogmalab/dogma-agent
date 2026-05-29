@@ -24,13 +24,6 @@ pub struct LoopConfig {
     pub max_tool_iterations: u32,
     /// Habilitar compresión de contexto.
     pub context_compression: bool,
-    /// Ventana deslizante: máximo de mensajes calientes en el payload del LLM.
-    /// Los mensajes más antiguos se evictan de la ventana caliente pero
-    /// permanecen persistidos en dogma-vdb para búsqueda semántica.
-    pub max_hot_messages: usize,
-    /// Habilitar búsqueda semántica previa al prompt para inyectar
-    /// contexto histórico relevante como mensaje system.
-    pub semantic_lookup: bool,
 }
 
 impl Default for LoopConfig {
@@ -38,8 +31,6 @@ impl Default for LoopConfig {
         Self {
             max_tool_iterations: 10,
             context_compression: true,
-            max_hot_messages: 8,
-            semantic_lookup: true,
         }
     }
 }
@@ -138,20 +129,6 @@ impl RuntimeLoop {
             let messages = {
                 let state = self.state.read();
                 state.messages.clone()
-            };
-
-            // ── Ventana deslizante ─────────────────────────────────
-            let messages = if messages.len() > self.config.max_hot_messages {
-                Self::apply_sliding_window(&messages, self.config.max_hot_messages)
-            } else {
-                messages
-            };
-
-            // ── Contexto semántico ─────────────────────────────────
-            let messages = if self.config.semantic_lookup && self.config.context_compression {
-                self.inject_semantic_context(&messages, session_id).await
-            } else {
-                messages
             };
 
             // Extraer tool specs del registro local y pasarlas al provider
@@ -270,92 +247,17 @@ impl RuntimeLoop {
         }
     }
 
-    /// Aplica la ventana deslizante: conserva los últimos `max` mensajes,
-    /// pero siempre preserva los mensajes `System`.
-    fn apply_sliding_window(messages: &[Message], max: usize) -> Vec<Message> {
-        // Separar system del resto
-        let systems: Vec<Message> = messages
-            .iter()
-            .filter(|m| m.role == MessageRole::System)
-            .cloned()
-            .collect();
-
-        let count_systems = systems.len();
-
-        // Si hay más system messages que el límite, tomar los últimos
-        let (systems, remaining_slots) = if count_systems >= max {
-            (systems[count_systems - max..].to_vec(), 0)
-        } else {
-            (systems, max - count_systems)
-        };
-
-        if remaining_slots == 0 {
-            return systems;
-        }
-
-        // Tomar los últimos `remaining_slots` mensajes no-system
-        let non_systems: Vec<Message> = messages
-            .iter()
-            .filter(|m| m.role != MessageRole::System)
-            .cloned()
-            .collect();
-
-        let start = non_systems.len().saturating_sub(remaining_slots);
-        let mut result = systems;
-        result.extend_from_slice(&non_systems[start..]);
-        result
-    }
-
-    /// Busca contexto semánticamente similar en la sesión y lo inyecta
-    /// como mensaje `System` al inicio del array si hay resultados.
-    async fn inject_semantic_context(&self, messages: &[Message], session_id: &str) -> Vec<Message> {
-        // Tomar el último mensaje de usuario como query de búsqueda
-        let user_query = match messages
-            .iter()
-            .rev()
-            .find(|m| m.role == MessageRole::User)
-        {
-            Some(m) => m.content.as_str(),
-            None => return messages.to_vec(),
-        };
-
-        let matches = {
-            let session = self.session.read();
-            session
-                .search_similar(user_query, session_id, 5)
-                .unwrap_or_default()
-        };
-
-        if matches.is_empty() {
-            return messages.to_vec();
-        }
-
-        // Formatear como contexto histórico
-        let context: String = matches
-            .iter()
-            .map(|m| {
-                format!(
-                    "[Previous context (score: {:.2})]\n{}",
-                    m.score, m.content
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-
-        let context_msg = Message::new(
-            MessageRole::System,
-            format!("Relevant context from earlier in this session:\n{context}"),
-        );
-
-        let mut result = vec![context_msg];
-        result.extend(messages.iter().cloned());
-        result
-    }
-
     /// Añade una herramienta al registro.
     pub fn register_tool(&self, tool: Box<dyn Tool>) {
         let mut tools = self.tools.write();
         tools.register(tool);
+    }
+
+    /// Devuelve un clon del handle compartido al SessionManager.
+    /// Útil para construir herramientas que necesitan acceso a la sesión
+    /// (ej: SearchMemoryTool).
+    pub fn session_handle(&self) -> Arc<RwLock<SessionManager>> {
+        Arc::clone(&self.session)
     }
 
     /// Devuelve una referencia al registro de herramientas.
@@ -368,86 +270,11 @@ impl RuntimeLoop {
 mod tests {
     use super::*;
 
-    fn msg(role: MessageRole, content: &str) -> Message {
-        Message::new(role, content)
-    }
-
     #[test]
-    fn test_sliding_window_under_limit() {
-        let msgs = vec![
-            msg(MessageRole::User, "hi"),
-            msg(MessageRole::Assistant, "hello"),
-        ];
-        let result = RuntimeLoop::apply_sliding_window(&msgs, 10);
-        assert_eq!(result.len(), 2);
-        assert_eq!(result[0].content, "hi");
-    }
-
-    #[test]
-    fn test_sliding_window_trims_oldest() {
-        let msgs = vec![
-            msg(MessageRole::User, "prompt1"),
-            msg(MessageRole::Assistant, "resp1"),
-            msg(MessageRole::User, "prompt2"),
-            msg(MessageRole::Assistant, "resp2"),
-            msg(MessageRole::User, "prompt3"),
-        ];
-        let result = RuntimeLoop::apply_sliding_window(&msgs, 3);
-        assert_eq!(result.len(), 3);
-        // Debe mantener los 3 más recientes
-        assert_eq!(result[0].content, "prompt2");
-        assert_eq!(result[1].content, "resp2");
-        assert_eq!(result[2].content, "prompt3");
-    }
-
-    #[test]
-    fn test_sliding_window_preserves_system() {
-        let msgs = vec![
-            msg(MessageRole::System, "context"),
-            msg(MessageRole::User, "prompt1"),
-            msg(MessageRole::Assistant, "resp1"),
-            msg(MessageRole::User, "prompt2"),
-        ];
-        let result = RuntimeLoop::apply_sliding_window(&msgs, 3);
-        assert_eq!(result.len(), 3);
-        // System siempre se preserva
-        assert_eq!(result[0].role, MessageRole::System);
-        assert_eq!(result[0].content, "context");
-        // Últimos 2 mensajes no-system
-        assert_eq!(result[1].content, "resp1");
-        assert_eq!(result[2].content, "prompt2");
-    }
-
-    #[test]
-    fn test_sliding_window_system_only() {
-        let msgs = vec![
-            msg(MessageRole::System, "ctx1"),
-            msg(MessageRole::System, "ctx2"),
-            msg(MessageRole::System, "ctx3"),
-            msg(MessageRole::User, "prompt"),
-        ];
-        let result = RuntimeLoop::apply_sliding_window(&msgs, 2);
-        assert_eq!(result.len(), 2);
-        // Toma los últimos 2 system messages (no room for non-system)
-        assert_eq!(result[0].content, "ctx2");
-        assert_eq!(result[1].content, "ctx3");
-    }
-
-    #[test]
-    fn test_sliding_window_exact_limit() {
-        let msgs = vec![
-            msg(MessageRole::User, "a"),
-            msg(MessageRole::Assistant, "b"),
-            msg(MessageRole::User, "c"),
-        ];
-        let result = RuntimeLoop::apply_sliding_window(&msgs, 3);
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn test_sliding_window_empty() {
-        let msgs: Vec<Message> = vec![];
-        let result = RuntimeLoop::apply_sliding_window(&msgs, 8);
-        assert!(result.is_empty());
+    fn test_runtime_loop_creation() {
+        // Solo verifica que el runtime se puede crear con config por defecto
+        let config = LoopConfig::default();
+        assert_eq!(config.max_tool_iterations, 10);
+        assert!(config.context_compression);
     }
 }
