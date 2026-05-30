@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_format_results_truncation() {
-        let matches = vec![
+        let matches = [
             make_match("id-1", "A very long content that should be truncated by the formatter", 0.9, None, None),
         ];
         let scored: Vec<(f32, &SemanticMatch)> = matches.iter().map(|m| (0.5, m)).collect();

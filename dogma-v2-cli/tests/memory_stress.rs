@@ -314,7 +314,7 @@ async fn test_needle_in_a_haystack() {
         "hybrid",
         0,
         secret_port,
-        &format!("El puerto secreto de comunicación interna es {secret_port}."),
+        format!("El puerto secreto de comunicación interna es {secret_port}."),
     ));
 
     // ── Construir RuntimeLoop con SearchMemoryTool ─────────────
@@ -415,7 +415,7 @@ async fn test_cause_effect_adjacency() {
         "hybrid",
         1, // ← depth=1 para navegar adyacencia
         expected_effect,
-        &format!(
+        format!(
             "El script falló porque ejecutó '{expected_cause}' y \
              el archivo no existía: {expected_effect}."
         ),
@@ -520,7 +520,7 @@ async fn test_context_drift_semantic_isolation() {
         "similarity", // Pure similarity para evitar bias temporal
         0,
         "page faults impredecibles",
-        &format!(
+        format!(
             "Las desventajas de mmap en embebidos incluyen: {expected_tech_content}."
         ),
     ));
