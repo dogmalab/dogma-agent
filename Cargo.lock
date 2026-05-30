@@ -262,6 +262,7 @@ dependencies = [
  "clap",
  "dogma-v2-common",
  "dogma-v2-core",
+ "dogma-vdb",
  "serde",
  "serde_json",
  "tempfile",

@@ -2,7 +2,10 @@
 //!
 //! Lee un archivo del sistema de archivos local y devuelve su contenido
 //! como texto. Límite de 1 MB para evitar saturar el contexto del LLM.
+//! Valida el path contra los directorios permitidos según el modo de
+//! seguridad configurado.
 
+use crate::tools::security::ToolGuardrail;
 use crate::tools::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -41,7 +44,11 @@ impl Tool for ReadFileTool {
             .and_then(Value::as_str)
             .ok_or_else(|| "missing required argument: path".to_string())?;
 
-        let metadata = std::fs::metadata(path).map_err(|e| format!("cannot access {path}: {e}"))?;
+        // Validar path contra los guardrails de seguridad
+        let validated_path = ToolGuardrail::validate_path(path)?;
+
+        let metadata = std::fs::metadata(&validated_path)
+            .map_err(|e| format!("cannot access {path}: {e}"))?;
 
         if metadata.len() > MAX_READ_SIZE {
             return Err(format!(
@@ -54,8 +61,8 @@ impl Tool for ReadFileTool {
             return Err(format!("{path} is a directory, not a file"));
         }
 
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let content = std::fs::read_to_string(&validated_path)
+            .map_err(|e| format!("cannot read {path}: {e}"))?;
 
         Ok(content)
     }

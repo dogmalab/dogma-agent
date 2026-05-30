@@ -10,6 +10,7 @@
 mod execute_script;
 mod read_file;
 mod search_memory;
+mod security;
 mod write_file;
 
 use async_trait::async_trait;
@@ -20,6 +21,9 @@ use tracing::debug;
 pub use execute_script::ExecuteScriptTool;
 pub use read_file::ReadFileTool;
 pub use search_memory::SearchMemoryTool;
+pub use security::{
+    CommandVerdict, SecurityConfig, SecurityMode, ToolGuardrail,
+};
 pub use write_file::WriteFileTool;
 
 /// Resultado de la ejecución de una herramienta.

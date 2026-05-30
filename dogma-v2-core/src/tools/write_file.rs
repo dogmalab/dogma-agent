@@ -1,8 +1,10 @@
 //! # write_file — Escribe contenido en un archivo
 //!
 //! Crea o sobrescribe un archivo con el contenido proporcionado.
-//! Límite de 1 MB para prevenir abusos.
+//! Límite de 1 MB para prevenir abusos. Valida el path contra los
+//! directorios permitidos según el modo de seguridad configurado.
 
+use crate::tools::security::ToolGuardrail;
 use crate::tools::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -57,13 +59,17 @@ impl Tool for WriteFileTool {
             ));
         }
 
+        // Validar path contra los guardrails de seguridad
+        let validated_path = ToolGuardrail::validate_path(path)?;
+
         // Create parent directories
-        if let Some(parent) = std::path::Path::new(path).parent() {
+        if let Some(parent) = validated_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("cannot create directory {parent:?}: {e}"))?;
         }
 
-        std::fs::write(path, content).map_err(|e| format!("cannot write {path}: {e}"))?;
+        std::fs::write(&validated_path, content)
+            .map_err(|e| format!("cannot write {path}: {e}"))?;
 
         Ok(format!(
             "successfully wrote {} bytes to {path}",

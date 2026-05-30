@@ -33,3 +33,4 @@ chrono.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 tempfile = "3"
+dogma-vdb = { path = "../../dogma-vdb" }

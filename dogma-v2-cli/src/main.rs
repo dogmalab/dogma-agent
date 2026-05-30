@@ -25,6 +25,7 @@ use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
 use dogma_v2_core::state::session::SessionManager;
 use dogma_v2_core::tools::create_survival_tools;
 use dogma_v2_core::tools::SearchMemoryTool;
+use dogma_v2_core::tools::{SecurityConfig, SecurityMode, ToolGuardrail};
 use tracing::{error, info};
 
 mod config;
@@ -129,6 +130,12 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool) -> Result<()> {
         source: e,
     })?;
 
+    // Inicializar seguridad
+    ToolGuardrail::init(SecurityConfig {
+        mode: SecurityMode::SemiAutonomous,
+        allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+    });
+
     // Inicializar session manager (crea sessions.vdb)
     let _session = SessionManager::open(data_dir)?;
 
@@ -175,10 +182,16 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<(
         .with_session_id(&session_id),
     );
 
-    // ── 4. Crear herramientas de supervivencia ─────────────────────
+    // ── 4. Inicializar seguridad ─────────────────────────────────────
+    ToolGuardrail::init(SecurityConfig {
+        mode: SecurityMode::SemiAutonomous,
+        allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+    });
+
+    // ── 5. Crear herramientas de supervivencia ─────────────────────
     let tools = create_survival_tools();
 
-    // ── 5. Crear y ejecutar el RuntimeLoop ─────────────────────────
+    // ── 6. Crear y ejecutar el RuntimeLoop ─────────────────────────
     let loop_config = LoopConfig::default();
     let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
 
@@ -223,6 +236,12 @@ async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool) -> Result<()>
 
     let mut session = SessionManager::open(data_dir)?;
     let session_id = session.create_session("dogma-v2-planner")?;
+
+    // Inicializar seguridad
+    ToolGuardrail::init(SecurityConfig {
+        mode: SecurityMode::SemiAutonomous,
+        allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+    });
 
     emit_event(
         json_mode,

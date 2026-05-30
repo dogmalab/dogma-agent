@@ -3,7 +3,16 @@
 //! Permite ejecutar código en lenguajes interpretados (bash, python,
 //! node) en entornos controlados. Reemplaza las 72 herramientas
 //! estáticas del Dogma 1.0 con un único ejecutor polivalente.
+//!
+//! ## Seguridad
+//!
+//! Según el `SecurityMode` configurado:
+//! * `Confined` — Todos los scripts son bloqueados inmediatamente.
+//! * `SemiAutonomous` — Comandos bash/sh peligrosos requieren
+//!   autorización humana vía HITL (stdin en CLI, evento en modo JSON).
+//! * `Free` — Sin restricciones.
 
+use crate::tools::security::{CommandVerdict, ToolGuardrail};
 use crate::tools::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -70,6 +79,21 @@ impl Tool for ExecuteScriptTool {
                 "script too large ({} bytes, max {MAX_SCRIPT_LENGTH})",
                 code.len()
             ));
+        }
+
+        // ── Inspección de seguridad ──────────────────────────────────
+        match ToolGuardrail::inspect_command(lang, code) {
+            CommandVerdict::Blocked { reason } => {
+                return Err(format!("[security] {reason}"));
+            }
+            CommandVerdict::RequiresAuthorization { command, reason } => {
+                // En SemiAutonomous mode, pedir aprobación humana
+                let msg = format!("[security] {reason}");
+                let prompt = format!("{lang}: {code}");
+                warn!("{msg}: {prompt}");
+                ToolGuardrail::request_approval(&command).await?;
+            }
+            CommandVerdict::Allowed => { /* continuar */ }
         }
 
         let binary = resolve_binary(lang).ok_or_else(|| format!("unsupported language: {lang}"))?;
