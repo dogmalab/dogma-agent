@@ -12,3 +12,5 @@
 
 pub mod loop_handle;
 pub mod provider;
+pub mod sub_agent;
+pub mod wasm_sandbox;

@@ -22,11 +22,15 @@ use dogma_v2_common::event::{Event, EventSeverity, EventType};
 use dogma_v2_core::RuntimeLoop;
 use dogma_v2_core::runtime::loop_handle::LoopConfig;
 use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
+use dogma_v2_core::runtime::sub_agent::SubAgentManager;
 use dogma_v2_core::state::session::SessionManager;
 use dogma_v2_core::tools::create_survival_tools;
+use dogma_v2_core::tools::DelegateTaskTool;
+use dogma_v2_core::tools::InstallSkillTool;
 use dogma_v2_core::tools::SearchMemoryTool;
-use dogma_v2_core::tools::{SecurityConfig, SecurityMode, ToolGuardrail};
-use tracing::{error, info};
+use dogma_v2_core::tools::{SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail};
+use dogma_v2_core::models::delegation::{AgentRole, SubAgentConfig};
+use tracing::{error, info, warn};
 
 mod config;
 
@@ -41,6 +45,11 @@ struct Cli {
     /// Directorio de datos (por defecto ~/.dogma).
     #[arg(long, default_value = "~/.dogma")]
     data_dir: String,
+
+    /// Modo del sandbox WASI para virtualizar ejecución de scripts.
+    /// Valores: disabled (default), enabled, wasm-only.
+    #[arg(long, default_value = "disabled")]
+    sandbox_mode: String,
 
     #[command(subcommand)]
     command: Commands,
@@ -92,10 +101,15 @@ fn main() {
 async fn run(cli: Cli) -> Result<()> {
     let data_dir = resolve_data_dir(&cli.data_dir)?;
 
+    // Parsear sandbox mode del flag CLI
+    let sandbox_mode: SandboxMode = cli.sandbox_mode.parse().map_err(|e| {
+        dogma_v2_common::error::Error::Validation(format!("invalid --sandbox-mode: {e}"))
+    })?;
+
     match cli.command {
-        Commands::Init => cmd_init(&data_dir, cli.json).await,
-        Commands::Chat { prompt } => cmd_chat(&data_dir, &prompt, cli.json).await,
-        Commands::Plan { task } => cmd_plan(&data_dir, &task, cli.json).await,
+        Commands::Init => cmd_init(&data_dir, cli.json, sandbox_mode).await,
+        Commands::Chat { prompt } => cmd_chat(&data_dir, &prompt, cli.json, sandbox_mode).await,
+        Commands::Plan { task } => cmd_plan(&data_dir, &task, cli.json, sandbox_mode).await,
     }
 }
 
@@ -114,7 +128,7 @@ fn resolve_data_dir(raw: &str) -> Result<PathBuf> {
 }
 
 /// Inicializa el entorno: crea directorios y prepara dogma-vdb.
-async fn cmd_init(data_dir: &PathBuf, json_mode: bool) -> Result<()> {
+async fn cmd_init(data_dir: &PathBuf, json_mode: bool, sandbox_mode: SandboxMode) -> Result<()> {
     emit_event(
         json_mode,
         &Event::new(
@@ -130,10 +144,12 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool) -> Result<()> {
         source: e,
     })?;
 
-    // Inicializar seguridad
+    // Inicializar seguridad con el sandbox mode del CLI
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
         allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+        sandbox_mode,
+        sandbox_limits: None,
     });
 
     // Inicializar session manager (crea sessions.vdb)
@@ -152,7 +168,7 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool) -> Result<()> {
 }
 
 /// Ejecuta una interacción rápida de chat.
-async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<()> {
+async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool, sandbox_mode: SandboxMode) -> Result<()> {
     emit_event(
         json_mode,
         &Event::new(
@@ -186,6 +202,8 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<(
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
         allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+        sandbox_mode,
+        sandbox_limits: None,
     });
 
     // ── 5. Crear herramientas de supervivencia ─────────────────────
@@ -193,11 +211,32 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<(
 
     // ── 6. Crear y ejecutar el RuntimeLoop ─────────────────────────
     let loop_config = LoopConfig::default();
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    let runtime = Arc::new(RuntimeLoop::new(provider.clone(), tools, session, loop_config));
 
     // Registrar herramienta de búsqueda semántica activa
     let memory_search = SearchMemoryTool::new(runtime.session_handle());
     runtime.register_tool(Box::new(memory_search));
+
+    // Registrar herramienta de instalación de skills dinámicos
+    match InstallSkillTool::new(provider.clone(), data_dir) {
+        Ok(skill_tool) => {
+            runtime.register_tool(Box::new(skill_tool));
+            info!("InstallSkillTool registered");
+        }
+        Err(e) => warn!("Failed to register InstallSkillTool: {e}"),
+    }
+
+    // Registrar herramienta de delegación a subagentes efímeros
+    let subagent_config = SubAgentConfig {
+        role: AgentRole::Orchestrator,
+        max_spawn_depth: 2,
+        max_iterations: 5,
+        ..SubAgentConfig::default()
+    };
+    let subagent_mgr = SubAgentManager::new(Arc::clone(&runtime), subagent_config);
+    let delegate_tool = DelegateTaskTool::new(Arc::new(subagent_mgr));
+    runtime.register_tool(Box::new(delegate_tool));
+    info!("DelegateTaskTool registered");
 
     let response = runtime.run(prompt, &session_id).await?;
 
@@ -228,7 +267,7 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool) -> Result<(
 }
 
 /// Inicia el modo estructurado de planificación.
-async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool) -> Result<()> {
+async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool, sandbox_mode: SandboxMode) -> Result<()> {
     emit_event(
         json_mode,
         &Event::new(EventType::System, EventSeverity::Info, "Starting plan mode"),
@@ -241,6 +280,8 @@ async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool) -> Result<()>
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
         allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+        sandbox_mode,
+        sandbox_limits: None,
     });
 
     emit_event(

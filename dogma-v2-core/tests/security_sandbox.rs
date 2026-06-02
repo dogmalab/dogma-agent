@@ -15,7 +15,7 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use dogma_v2_core::tools::{SecurityConfig, SecurityMode, ToolGuardrail};
+use dogma_v2_core::tools::{SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail};
 
 /// Helper: global test config lock + init.
 /// Ensures init is called exactly once per process.
@@ -26,6 +26,8 @@ fn init_security(mode: SecurityMode, dirs: Vec<PathBuf>) {
         ToolGuardrail::init(SecurityConfig {
             mode,
             allowed_dirs: dirs,
+            sandbox_mode: SandboxMode::Disabled,
+            sandbox_limits: None,
         });
     });
 }

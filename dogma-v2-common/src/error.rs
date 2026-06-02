@@ -44,6 +44,14 @@ pub enum Error {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    // ── Security ────────────────────────────────────────────────────
+    #[error("security violation: {0}")]
+    Security(String),
+
+    // ── Sandbox (WASM virtualizado) ─────────────────────────────────
+    #[error("sandbox error: {detail}")]
+    Sandbox { detail: String },
+
     // ── Fatal ───────────────────────────────────────────────────────
     #[error("I/O error on {path}: {source}")]
     Io {
@@ -81,7 +89,15 @@ impl Error {
                 | Self::ToolNotFound(_)
                 | Self::Validation(_)
                 | Self::Serialization(_)
+                | Self::Security(_)
+                | Self::Sandbox { .. }
         )
+    }
+
+    /// Devuelve `true` si el error es de seguridad.
+    #[must_use]
+    pub fn is_security(&self) -> bool {
+        matches!(self, Self::Security(_) | Self::Sandbox { .. })
     }
 
     /// Devuelve `true` si el error es de categoría **Fatal**.

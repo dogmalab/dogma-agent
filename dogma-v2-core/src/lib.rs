@@ -9,12 +9,15 @@
 //! * **State** — Session Manager y adaptadores sobre `dogma-vdb` para
 //!   almacenar todo el estado como nodos de un grafo vectorial.
 
+pub mod models;
 pub mod runtime;
 pub mod state;
 pub mod tools;
 
 pub use runtime::loop_handle::RuntimeLoop;
 pub use runtime::provider::LLMProvider;
+pub use runtime::sub_agent::SubAgentManager;
+pub use runtime::wasm_sandbox::WasmSandbox;
 pub use state::compressor::Compressor;
 pub use state::session::SessionManager;
 pub use tools::{Tool, ToolResult};

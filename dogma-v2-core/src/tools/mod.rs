@@ -7,10 +7,12 @@
 //! 3. `execute_script(lang, code)` — Ejecuta scripts ligeros.
 //! 4. `search_memory(query, ...)` — Búsqueda semántica en la memoria del agente.
 
+mod delegate_task;
 mod execute_script;
 mod read_file;
 mod search_memory;
 mod security;
+mod skills_sh;
 mod write_file;
 
 use async_trait::async_trait;
@@ -18,12 +20,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
 
+pub use delegate_task::DelegateTaskTool;
 pub use execute_script::ExecuteScriptTool;
 pub use read_file::ReadFileTool;
 pub use search_memory::SearchMemoryTool;
 pub use security::{
-    CommandVerdict, SecurityConfig, SecurityMode, ToolGuardrail,
+    CommandVerdict, SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail,
 };
+pub use skills_sh::{CognitiveAuditReport, InstallSkillTool, SkillsShClient};
 pub use write_file::WriteFileTool;
 
 /// Resultado de la ejecución de una herramienta.

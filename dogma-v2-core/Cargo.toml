@@ -15,6 +15,10 @@ tokio.workspace = true
 async-trait.workspace = true
 futures = "0.3"
 
+# WebAssembly Sandbox (WASI)
+wasmtime = { version = "34", default-features = false, features = ["async", "cranelift"] }
+wasmtime-wasi = "34"
+
 # Error handling
 thiserror.workspace = true
 
@@ -35,7 +39,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 uuid.workspace = true
 chrono.workspace = true
 regex-lite = "0.1"
+base64 = "0.22"
 
 [dev-dependencies]
 tracing-subscriber.workspace = true
 tempfile = "3"
+wat = "1"

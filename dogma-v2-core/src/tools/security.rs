@@ -18,6 +18,43 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use crate::runtime::wasm_sandbox::SandboxLimits;
+
+/// Modo de operación del sandbox WASI para ejecución de scripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SandboxMode {
+    /// Ejecución nativa sin sandbox (comportamiento actual).
+    #[default]
+    Disabled,
+    /// Ejecutar scripts dentro del sandbox WASI siempre que sea posible.
+    /// Scripts bash/python se ejecutan nativamente (WASM no disponible).
+    Enabled,
+    /// Solo permitir ejecución de módulos WASM pre-compilados.
+    /// Bloquear todo script bash/python/node.
+    WasmOnly,
+}
+
+impl std::str::FromStr for SandboxMode {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "disabled" | "off" | "none" => Ok(Self::Disabled),
+            "enabled" | "on" | "yes" | "sandbox" => Ok(Self::Enabled),
+            "wasmonly" | "wasm-only" | "wasm_only" | "strict" => Ok(Self::WasmOnly),
+            _ => Err(format!("unknown sandbox mode: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for SandboxMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disabled => write!(f, "disabled"),
+            Self::Enabled => write!(f, "enabled"),
+            Self::WasmOnly => write!(f, "wasm-only"),
+        }
+    }
+}
 
 /// Modo de seguridad del agente.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +106,10 @@ pub struct SecurityConfig {
     /// Directorios permitidos para operaciones de archivo.
     /// Solo se usa cuando `mode` es `Confined` o `SemiAutonomous`.
     pub allowed_dirs: Vec<PathBuf>,
+    /// Modo del sandbox WASI para virtualización de scripts.
+    pub sandbox_mode: SandboxMode,
+    /// Límites del sandbox WASI (CPU, memoria, etc.).
+    pub sandbox_limits: Option<SandboxLimits>,
 }
 
 impl Default for SecurityConfig {
@@ -78,6 +119,8 @@ impl Default for SecurityConfig {
             allowed_dirs: vec![
                 std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             ],
+            sandbox_mode: SandboxMode::Disabled,
+            sandbox_limits: None,
         }
     }
 }
@@ -150,8 +193,8 @@ impl ToolGuardrail {
         }
     }
 
-    /// Reemplaza la configuración actual (útil en tests).
-    #[cfg(test)]
+    /// Reemplaza la configuración de seguridad en caliente.
+    /// Disponible en tests y para recarga desde CLI.
     pub fn set_config(config: SecurityConfig) {
         let mut guard = SECURITY_CONFIG.lock().unwrap();
         *guard = Some(config);
@@ -161,7 +204,7 @@ impl ToolGuardrail {
     ///
     /// Si no se ha inicializado, devuelve la configuración por defecto
     /// (modo `SemiAutonomous`).
-    fn config() -> SecurityConfig {
+    pub fn config() -> SecurityConfig {
         let guard = SECURITY_CONFIG.lock().unwrap();
         guard.clone().unwrap_or_default()
     }
@@ -268,8 +311,21 @@ impl ToolGuardrail {
     /// En `Confined` mode, todos los scripts son bloqueados.
     /// En `SemiAutonomous`, busca patrones peligrosos en scripts bash/sh.
     /// En `Free`, todo está permitido.
+    ///
+    /// Además, si `sandbox_mode` es `WasmOnly`, bloquea todo excepto
+    /// el lenguaje `wasm`.
     pub fn inspect_command(lang: &str, code: &str) -> CommandVerdict {
         let config = Self::config();
+
+        // ── SandboxMode check (previo a SecurityMode) ──────────────
+        if config.sandbox_mode == SandboxMode::WasmOnly && lang != "wasm" {
+            return CommandVerdict::Blocked {
+                reason: format!(
+                    "execution of '{lang}' scripts is blocked in SandboxMode::WasmOnly. \
+                     Only pre-compiled .wasm modules are allowed."
+                ),
+            };
+        }
 
         match config.mode {
             SecurityMode::Free => return CommandVerdict::Allowed,
@@ -437,6 +493,8 @@ mod tests {
         ToolGuardrail::set_config(SecurityConfig {
             mode: SecurityMode::Free,
             allowed_dirs: vec![],
+            sandbox_mode: SandboxMode::Disabled,
+            sandbox_limits: None,
         });
     }
 
@@ -444,6 +502,8 @@ mod tests {
         ToolGuardrail::set_config(SecurityConfig {
             mode: SecurityMode::Confined,
             allowed_dirs: vec![PathBuf::from("/tmp")],
+            sandbox_mode: SandboxMode::Disabled,
+            sandbox_limits: None,
         });
     }
 
@@ -452,6 +512,8 @@ mod tests {
         ToolGuardrail::set_config(SecurityConfig {
             mode: SecurityMode::SemiAutonomous,
             allowed_dirs: vec![cwd, PathBuf::from("/tmp")],
+            sandbox_mode: SandboxMode::Disabled,
+            sandbox_limits: None,
         });
     }
 
@@ -575,5 +637,44 @@ mod tests {
         // validate_path: new file in /etc blocked
         let result = ToolGuardrail::validate_path("/etc/_dogma_test_new_file.txt");
         assert!(result.is_err());
+
+        // ── SandboxMode: WasmOnly tests ───────────────────────────
+        // WasmOnly: bash blocked at inspect_command level
+        let wasm_only_config = SecurityConfig {
+            mode: SecurityMode::Free,
+            allowed_dirs: vec![],
+            sandbox_mode: SandboxMode::WasmOnly,
+            sandbox_limits: None,
+        };
+        ToolGuardrail::set_config(wasm_only_config);
+
+        let verdict = ToolGuardrail::inspect_command("bash", "echo hello");
+        assert!(
+            matches!(&verdict, CommandVerdict::Blocked { .. }),
+            "WasmOnly should block bash, got: {verdict:?}"
+        );
+        if let CommandVerdict::Blocked { reason } = &verdict {
+            assert!(reason.contains("WasmOnly"), "reason: {reason}");
+        }
+
+        // WasmOnly: python blocked
+        let verdict = ToolGuardrail::inspect_command("python", "print('hi')");
+        assert!(matches!(verdict, CommandVerdict::Blocked { .. }));
+
+        // WasmOnly: wasm allowed
+        let verdict = ToolGuardrail::inspect_command("wasm", "(module)");
+        assert!(
+            matches!(verdict, CommandVerdict::Allowed),
+            "WasmOnly should allow wasm, got: {verdict:?}"
+        );
+
+        // Restore semi-autonomous for subsequent tests
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        ToolGuardrail::set_config(SecurityConfig {
+            mode: SecurityMode::SemiAutonomous,
+            allowed_dirs: vec![cwd, PathBuf::from("/tmp")],
+            sandbox_mode: SandboxMode::Disabled,
+            sandbox_limits: None,
+        });
     }
 }
