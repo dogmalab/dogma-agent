@@ -13,26 +13,35 @@ El agente Dogma 2.0 es una reescritura total desde cero. Abandonamos todas las d
 
 ---
 
-## ✅ ESTADO ACTUAL (2026-06-20)
+## ✅ ESTADO ACTUAL (2026-06-21)
 
 ### Estructura del Workspace — COMPILA (0 warnings, 0 errors)
 
 | Crate | Archivos | LOC | Tests | Estado |
 |-------|----------|-----|-------|--------|
 | `dogma-v2-common` | 3 .rs | ~320 | 3 | Completo (error enum, NDJSON events) |
-| `dogma-v2-core` | 12 .rs | ~2,800 | 15 | Completo (runtime, tools, state, compressor, context_manager, web tools) |
-| `dogma-v2-cli` | 4 .rs | ~2,100 | 6 | Completo (clap CLI, ratatui TUI, config) |
-| **Total** | **19 .rs** | **~5,220** | **24** | **Compila 0/0** |
+| `dogma-v2-core` | 15 .rs | ~3,600 | 20 | Completo (runtime, tools, state, context, user_memory, web tools) |
+| `dogma-v2-cli` | 13 .rs | ~2,800 | 26 | Completo (CLI, TUI modular, config) |
+| **Total** | **31 .rs** | **~6,720** | **49** | **Compila 0/0** |
 
 ### Diagrama de Capas
 
 ```
 dogma-v2-common ──────► dogma-v2-core ──────► dogma-v2-cli
-     (tipos)                 (runtime)             (CLI)
+     (tipos)                 (runtime)             (CLI+TUI)
         │                        │
         │                   dogma-vdb
         │                  (estado nativo)
         └── serde + thiserror + parking_lot + tracing + chrono
+```
+
+### Capas de Memoria
+
+```
+1. Session Context  — historial de conversación (dogma-vdb)
+2. User Memory      — preferencias y datos del usuario (persistente)
+3. System Context   — OS, project, git (auto-detectado)
+4. Context Manager  — selección semántica de contexto relevante
 ```
 
 ---

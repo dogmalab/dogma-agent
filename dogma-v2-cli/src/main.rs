@@ -1,12 +1,35 @@
 //! # dogma-v2-cli — Interfaz de control por terminal
 //!
-//! CLI principal del agente Dogma 2.0 con comandos:
+//! CLI principal del agente Dogma 2.0.
+//!
+//! ## Comandos
 //!
 //! * `dogma init` — Inicializa el entorno y levanta los mapas de
 //!   memoria de dogma-vdb.
 //! * `dogma chat "<prompt>"` — Ejecución rápida de una interacción.
-//! * `dogma plan "<task>"` — Inicia el modo estructurado de
-//!   planificación.
+//! * `dogma interactive [prompt]` — Modo interactivo con UI en terminal.
+//!   Soporta historial de input (Up/Down), multi-línea (Shift+Enter),
+//!   scroll del chat (PageUp/PageDown), y slash commands.
+//! * `dogma plan "<task>"` — Planificación estructurada de tareas.
+//!
+//! ## Herramientas del agente
+//!
+//! El agente tiene acceso a las siguientes herramientas:
+//! * `read_file`, `write_file`, `execute_script` — operaciones básicas
+//! * `search_memory` — búsqueda semántica en sesiones pasadas
+//! * `update_user_memory` — guardar/recuperar preferencias del usuario
+//! * `plan` — crear planes estructurados para tareas complejas
+//! * `delegate_task` — spawn sub-agentes para ejecución aislada
+//! * `install_skill` — instalar skills dinámicas desde skills.sh
+//! * `web_search`, `web_extract` — búsqueda web (requiere EXA_API_KEY)
+//!
+//! ## Memoria
+//!
+//! El agente mantiene 4 capas de memoria:
+//! 1. **Session Context** — historial de conversación (dogma-vdb)
+//! 2. **User Memory** — preferencias y datos del usuario (persistente)
+//! 3. **System Context** — OS, project, git (auto-detectado)
+//! 4. **Context Manager** — selección semántica de contexto relevante
 //!
 //! ## Flag `--json`
 //!
@@ -524,12 +547,32 @@ async fn cmd_interactive(
                                     "/help" => {
                                         renderer.show_sent(&line);
                                         eprintln!(
-                                            "┌─ Dogma 2.0 Interactive ─────────────────────────┐\n\
-                                             │ /help        — Show this help                   │\n\
-                                             │ /exit /quit  — Exit interactive mode            │\n\
-                                             │ /status      — Show current session stats       │\n\
-                                             │ <prompt>     — Send prompt to agent             │\n\
-                                             └─────────────────────────────────────────────────┘"
+                                            "┌─ Dogma 2.0 Interactive ─────────────────────────────────┐\n\
+                                             │                                                           │\n\
+                                             │  COMANDOS                                                 │\n\
+                                             │    /help        — Show this help                          │\n\
+                                             │    /exit /quit  — Exit interactive mode                   │\n\
+                                             │    /status      — Show session stats                      │\n\
+                                             │                                                           │\n\
+                                             │  INPUT                                                     │\n\
+                                             │    <text> Enter — Send prompt to agent                    │\n\
+                                             │    Shift+Enter  — New line in multi-line input            │\n\
+                                             │    Up / Down    — Navigate input history                  │\n\
+                                             │                                                           │\n\
+                                             │  SCROLL                                                    │\n\
+                                             │    PageUp/Down  — Scroll chat                             │\n\
+                                             │    Home / End   — Jump to top/bottom                      │\n\
+                                             │                                                           │\n\
+                                             │  HERRAMIENTAS (el agente puede usarlas)                   │\n\
+                                             │    search_memory      — Semantic search across sessions  │\n\
+                                             │    update_user_memory — Store/retrieve user preferences  │\n\
+                                             │    read_file/write_file — File operations                 │\n\
+                                             │    execute_script     — Run code (bash/python/wasm)       │\n\
+                                             │    plan               — Create structured task plans      │\n\
+                                             │    delegate_task      — Spawn sub-agents                  │\n\
+                                             │    web_search/web_extract — Web search (needs EXA key)    │\n\
+                                             │                                                           │\n\
+                                             └───────────────────────────────────────────────────────────┘"
                                         );
                                         renderer.show_input("");
                                     }
