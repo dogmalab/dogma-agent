@@ -483,6 +483,8 @@ async fn cmd_interactive(
     let mut queue: VecDeque<String> = VecDeque::new();
     let mut busy = false;
     let mut llm_rx: Option<tokio::sync::oneshot::Receiver<Result<String>>> = None;
+    let mut input_history: Vec<String> = Vec::new();
+    let mut history_idx: Option<usize> = None;
 
     // ── 6. Prompt inicial ───────────────────────────────────────────
     if let Some(prompt) = initial_prompt {
@@ -504,6 +506,14 @@ async fn cmd_interactive(
                         use crossterm::event::KeyCode;
                         match key.code {
                             KeyCode::Enter => {
+                                // Shift+Enter detection: si el buffer ya tiene
+                                // líneas nuevas, agregar otra en vez de submit.
+                                if input_buffer.contains('\n') {
+                                    input_buffer.push('\n');
+                                    renderer.show_input(&input_buffer);
+                                    continue;
+                                }
+
                                 let line = input_buffer.trim().to_string();
                                 if line.is_empty() {
                                     continue;
@@ -531,6 +541,12 @@ async fn cmd_interactive(
                                         renderer.show_input("");
                                     }
                                     prompt => {
+                                        // Guardar en history
+                                        if input_history.last().map(|s| s.as_str()) != Some(prompt) {
+                                            input_history.push(prompt.to_string());
+                                        }
+                                        history_idx = None;
+
                                         renderer.reset_output();
                                         renderer.show_sent(prompt);
                                         input_buffer.clear();
@@ -553,13 +569,43 @@ async fn cmd_interactive(
                             }
                             KeyCode::Char(c) => {
                                 input_buffer.push(c);
+                                history_idx = None; // reset history navigation
                                 renderer.show_input(&input_buffer);
+                            }
+                            // Input history: Up/Down
+                            KeyCode::Up => {
+                                if input_history.is_empty() {
+                                    continue;
+                                }
+                                if history_idx.is_none() {
+                                    // Guardar buffer actual y empezar desde el final
+                                    input_history.push(input_buffer.clone());
+                                    history_idx = Some(input_history.len() - 1);
+                                } else if let Some(idx) = history_idx {
+                                    if idx > 0 {
+                                        history_idx = Some(idx - 1);
+                                    }
+                                }
+                                if let Some(idx) = history_idx {
+                                    input_buffer = input_history[idx].clone();
+                                    renderer.show_input(&input_buffer);
+                                }
+                            }
+                            KeyCode::Down => {
+                                if let Some(idx) = history_idx {
+                                    if idx + 1 < input_history.len() {
+                                        history_idx = Some(idx + 1);
+                                        input_buffer = input_history[idx + 1].clone();
+                                    } else {
+                                        history_idx = None;
+                                        input_buffer.clear();
+                                    }
+                                    renderer.show_input(&input_buffer);
+                                }
                             }
                             // Scroll keys
                             KeyCode::PageUp => renderer.scroll_up(),
                             KeyCode::PageDown => renderer.scroll_down(),
-                            KeyCode::Up => renderer.scroll_up(),
-                            KeyCode::Down => renderer.scroll_down(),
                             KeyCode::Home => renderer.scroll_top(),
                             KeyCode::End => renderer.scroll_bottom(),
                             _ => {}
