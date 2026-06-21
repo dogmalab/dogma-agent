@@ -158,6 +158,10 @@ pub struct RuntimeLoop {
     state: RwLock<LoopState>,
     /// Canal opcional para emitir eventos de la UI reactiva.
     event_tx: Option<mpsc::Sender<AgentEvent>>,
+    /// Contexto del sistema detectado (OS, project, git).
+    system_context: crate::state::system_context::SystemContext,
+    /// Memoria persistente del usuario (key-value store).
+    user_memory: Option<Arc<RwLock<crate::state::user_memory::UserMemory>>>,
 }
 
 impl RuntimeLoop {
@@ -172,6 +176,7 @@ impl RuntimeLoop {
         config: LoopConfig,
         event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Self {
+        let system_context = crate::state::system_context::SystemContext::detect();
         Self {
             provider,
             tools: Arc::new(RwLock::new(tools)),
@@ -182,7 +187,35 @@ impl RuntimeLoop {
                 messages: Vec::new(),
             }),
             event_tx,
+            system_context,
+            user_memory: None,
         }
+    }
+
+    /// Conecta la memoria del usuario al runtime.
+    pub fn with_user_memory(mut self, user_memory: Arc<RwLock<crate::state::user_memory::UserMemory>>) -> Self {
+        self.user_memory = Some(user_memory);
+        self
+    }
+
+    /// Construye el system prompt dinámico combinando las 4 capas de memoria.
+    fn build_system_prompt(&self) -> String {
+        let mut prompt = self.config.system_prompt.clone();
+
+        // CAPA 2: System Context (OS, project, git)
+        prompt.push('\n');
+        prompt.push_str(&self.system_context.to_prompt_section());
+
+        // CAPA 3: User Memory (key-value store)
+        if let Some(ref um) = self.user_memory {
+            let um_section = um.read().to_prompt_section();
+            if !um_section.is_empty() {
+                prompt.push('\n');
+                prompt.push_str(&um_section);
+            }
+        }
+
+        prompt
     }
 
     /// Ejecuta el ciclo RSI con un prompt de entrada.
@@ -199,6 +232,9 @@ impl RuntimeLoop {
             let session = self.session.read();
             load_session_history(&session, session_id)
         };
+
+        // Construir system prompt dinámico con las 4 capas de memoria
+        let dynamic_prompt = self.build_system_prompt();
 
         // Construir contexto: system prompt + historial + prompt actual
         {
@@ -225,8 +261,6 @@ impl RuntimeLoop {
                         session.search_similar_global_raw(embedding, k)
                     };
 
-                    // Usar un embedder dummy si no hay embedder configurado
-                    // En producción, el embedder se inyectará desde el CLI
                     if let Ok(relevant) = cm.build_context(
                         &recent_msgs,
                         session_id,
@@ -240,7 +274,6 @@ impl RuntimeLoop {
                                 "Injecting {} relevant messages into context",
                                 relevant.len()
                             );
-                            // Inyectar como mensaje de sistema adicional
                             state.messages.insert(
                                 1,
                                 crate::runtime::provider::Message::new(
@@ -253,10 +286,10 @@ impl RuntimeLoop {
                 }
             }
 
-            // Siempre inyectar system prompt al inicio del contexto
+            // Inyectar system prompt dinámico al inicio del contexto
             state.messages.insert(
                 0,
-                Message::new(MessageRole::System, &self.config.system_prompt),
+                Message::new(MessageRole::System, &dynamic_prompt),
             );
 
             state.messages.push(Message::new(MessageRole::User, prompt));
