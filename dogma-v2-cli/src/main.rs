@@ -13,6 +13,8 @@
 //! Si está presente, silencia el output humano de `stdout` y escupe
 //! exclusivamente el stream de eventos NDJSON línea por línea.
 
+use std::collections::VecDeque;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -20,19 +22,21 @@ use clap::{Parser, Subcommand};
 use dogma_v2_common::Result;
 use dogma_v2_common::event::{Event, EventSeverity, EventType};
 use dogma_v2_core::RuntimeLoop;
+use dogma_v2_core::models::delegation::{AgentRole, SubAgentConfig};
 use dogma_v2_core::runtime::loop_handle::LoopConfig;
 use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
 use dogma_v2_core::runtime::sub_agent::SubAgentManager;
 use dogma_v2_core::state::session::SessionManager;
-use dogma_v2_core::tools::create_survival_tools;
 use dogma_v2_core::tools::DelegateTaskTool;
 use dogma_v2_core::tools::InstallSkillTool;
+use dogma_v2_core::tools::PlanTool;
 use dogma_v2_core::tools::SearchMemoryTool;
+use dogma_v2_core::tools::create_survival_tools;
 use dogma_v2_core::tools::{SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail};
-use dogma_v2_core::models::delegation::{AgentRole, SubAgentConfig};
 use tracing::{error, info, warn};
 
 mod config;
+mod ui;
 
 /// Dogma 2.0 — Agente IA minimalista con estado en dogma-vdb.
 #[derive(Parser, Debug)]
@@ -66,6 +70,12 @@ enum Commands {
         prompt: String,
     },
 
+    /// Inicia el modo interactivo con UI dinámica en línea.
+    Interactive {
+        /// Prompt inicial opcional para comenzar la sesión.
+        initial_prompt: Option<String>,
+    },
+
     /// Inicia el modo estructurado de planificación.
     Plan {
         /// Descripción de la tarea a planificar.
@@ -76,10 +86,14 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    // Inicializar tracing (siempre a stderr)
+    // En modo interactivo, silenciar tracing (conflictúa con la UI)
+    let is_interactive = matches!(cli.command, Commands::Interactive { .. });
+    let default_filter = if is_interactive { "error" } else { "info" };
+
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| default_filter.into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -109,6 +123,9 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Init => cmd_init(&data_dir, cli.json, sandbox_mode).await,
         Commands::Chat { prompt } => cmd_chat(&data_dir, &prompt, cli.json, sandbox_mode).await,
+        Commands::Interactive { initial_prompt } => {
+            cmd_interactive(&data_dir, initial_prompt.as_deref(), cli.json, sandbox_mode).await
+        }
         Commands::Plan { task } => cmd_plan(&data_dir, &task, cli.json, sandbox_mode).await,
     }
 }
@@ -147,7 +164,10 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool, sandbox_mode: SandboxMode
     // Inicializar seguridad con el sandbox mode del CLI
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
-        allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+        allowed_dirs: vec![
+            data_dir.clone(),
+            std::env::current_dir().unwrap_or_default(),
+        ],
         sandbox_mode,
         sandbox_limits: None,
     });
@@ -168,7 +188,12 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool, sandbox_mode: SandboxMode
 }
 
 /// Ejecuta una interacción rápida de chat.
-async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool, sandbox_mode: SandboxMode) -> Result<()> {
+async fn cmd_chat(
+    data_dir: &PathBuf,
+    prompt: &str,
+    json_mode: bool,
+    sandbox_mode: SandboxMode,
+) -> Result<()> {
     emit_event(
         json_mode,
         &Event::new(
@@ -179,10 +204,10 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool, sandbox_mod
     );
 
     // ── 1. Cargar configuración del proveedor ──────────────────────
-    let provider_config =
-        config::load_provider_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
+    let dogma_config =
+        config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
     // ── 2. Crear proveedor LLM ─────────────────────────────────────
-    let provider = Arc::new(OpenAiProvider::new(provider_config)?);
+    let provider = Arc::new(OpenAiProvider::new(dogma_config.provider)?);
 
     // ── 3. Inicializar sesión ──────────────────────────────────────
     let mut session = SessionManager::open(data_dir)?;
@@ -201,7 +226,10 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool, sandbox_mod
     // ── 4. Inicializar seguridad ─────────────────────────────────────
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
-        allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+        allowed_dirs: vec![
+            data_dir.clone(),
+            std::env::current_dir().unwrap_or_default(),
+        ],
         sandbox_mode,
         sandbox_limits: None,
     });
@@ -211,11 +239,21 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool, sandbox_mod
 
     // ── 6. Crear y ejecutar el RuntimeLoop ─────────────────────────
     let loop_config = LoopConfig::default();
-    let runtime = Arc::new(RuntimeLoop::new(provider.clone(), tools, session, loop_config));
+    let runtime = Arc::new(RuntimeLoop::new(
+        provider.clone(),
+        tools,
+        session,
+        loop_config,
+        None,
+    ));
 
     // Registrar herramienta de búsqueda semántica activa
     let memory_search = SearchMemoryTool::new(runtime.session_handle());
     runtime.register_tool(Box::new(memory_search));
+
+    // Registrar herramienta de planificación
+    let plan_tool = PlanTool::new(runtime.session_handle());
+    runtime.register_tool(Box::new(plan_tool));
 
     // Registrar herramienta de instalación de skills dinámicos
     match InstallSkillTool::new(provider.clone(), data_dir) {
@@ -267,7 +305,12 @@ async fn cmd_chat(data_dir: &PathBuf, prompt: &str, json_mode: bool, sandbox_mod
 }
 
 /// Inicia el modo estructurado de planificación.
-async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool, sandbox_mode: SandboxMode) -> Result<()> {
+async fn cmd_plan(
+    data_dir: &PathBuf,
+    task: &str,
+    json_mode: bool,
+    sandbox_mode: SandboxMode,
+) -> Result<()> {
     emit_event(
         json_mode,
         &Event::new(EventType::System, EventSeverity::Info, "Starting plan mode"),
@@ -279,7 +322,10 @@ async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool, sandbox_mode:
     // Inicializar seguridad
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
-        allowed_dirs: vec![data_dir.clone(), std::env::current_dir().unwrap_or_default()],
+        allowed_dirs: vec![
+            data_dir.clone(),
+            std::env::current_dir().unwrap_or_default(),
+        ],
         sandbox_mode,
         sandbox_limits: None,
     });
@@ -315,6 +361,269 @@ async fn cmd_plan(data_dir: &PathBuf, task: &str, json_mode: bool, sandbox_mode:
     if !json_mode {
         println!("{plan}");
     }
+
+    Ok(())
+}
+
+/// Spawna una tarea de LLM y devuelve un receptor para la respuesta.
+fn spawn_llm(
+    runtime: &Arc<RuntimeLoop>,
+    prompt: &str,
+    session_id: &str,
+) -> tokio::sync::oneshot::Receiver<Result<String>> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let runtime = Arc::clone(runtime);
+    let prompt = prompt.to_owned();
+    let session_id = session_id.to_owned();
+
+    tokio::spawn(async move {
+        let result = runtime.run(&prompt, &session_id).await;
+        let _ = tx.send(result);
+    });
+
+    rx
+}
+
+/// Inicia el modo interactivo con UI reactiva y cola de input.
+async fn cmd_interactive(
+    data_dir: &PathBuf,
+    initial_prompt: Option<&str>,
+    json_mode: bool,
+    sandbox_mode: SandboxMode,
+) -> Result<()> {
+    use dogma_v2_core::models::events::AgentEvent;
+    use tokio::sync::mpsc;
+    use ui::InputEvent;
+
+    emit_event(
+        json_mode,
+        &Event::new(
+            EventType::System,
+            EventSeverity::Info,
+            "Starting interactive mode",
+        ),
+    );
+
+    // ── 1. Cargar configuración del proveedor ───────────────────────
+    let dogma_config =
+        config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
+    let model_name = dogma_config.provider.model.clone();
+    let provider = Arc::new(OpenAiProvider::new(dogma_config.provider)?);
+
+    // ── 2. Inicializar sesión ───────────────────────────────────────
+    let mut session = SessionManager::open(data_dir)?;
+    let session_id = session.create_session("dogma-v2-interactive")?;
+
+    // ── 3. Inicializar seguridad ────────────────────────────────────
+    ToolGuardrail::init(SecurityConfig {
+        mode: SecurityMode::SemiAutonomous,
+        allowed_dirs: vec![
+            data_dir.clone(),
+            std::env::current_dir().unwrap_or_default(),
+        ],
+        sandbox_mode,
+        sandbox_limits: None,
+    });
+
+    // ── 4. Crear runtime con canal de eventos ───────────────────────
+    let tools = create_survival_tools();
+    let loop_config = LoopConfig {
+        max_tool_iterations: dogma_config.max_tool_iterations,
+        ..LoopConfig::default()
+    };
+    let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(256);
+
+    let runtime = Arc::new(RuntimeLoop::new(
+        provider.clone(),
+        tools,
+        session,
+        loop_config,
+        Some(event_tx),
+    ));
+
+    let memory_search = SearchMemoryTool::new(runtime.session_handle());
+    runtime.register_tool(Box::new(memory_search));
+
+    let plan_tool = PlanTool::new(runtime.session_handle());
+    runtime.register_tool(Box::new(plan_tool));
+
+    match InstallSkillTool::new(provider.clone(), data_dir) {
+        Ok(skill_tool) => {
+            runtime.register_tool(Box::new(skill_tool));
+            info!("InstallSkillTool registered");
+        }
+        Err(e) => warn!("Failed to register InstallSkillTool: {e}"),
+    }
+
+    let subagent_config = SubAgentConfig {
+        role: AgentRole::Orchestrator,
+        max_spawn_depth: 2,
+        max_iterations: 5,
+        ..SubAgentConfig::default()
+    };
+    let subagent_mgr = SubAgentManager::new(Arc::clone(&runtime), subagent_config);
+    let delegate_tool = DelegateTaskTool::new(Arc::new(subagent_mgr));
+    runtime.register_tool(Box::new(delegate_tool));
+    info!("DelegateTaskTool registered");
+
+    // ── 5. UI setup ─────────────────────────────────────────────────
+    let is_tty = std::io::stdin().is_terminal();
+    if is_tty {
+        crossterm::terminal::enable_raw_mode().map_err(|e| {
+            dogma_v2_common::error::Error::Validation(format!("failed to enable raw mode: {e}"))
+        })?;
+    }
+
+    let mut input_rx = ui::spawn_input_reader();
+    let mut renderer = ui::Renderer::new();
+    renderer.set_model(&model_name);
+    renderer.init();
+
+    let mut input_buffer = String::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    let mut busy = false;
+    let mut llm_rx: Option<tokio::sync::oneshot::Receiver<Result<String>>> = None;
+
+    // ── 6. Prompt inicial ───────────────────────────────────────────
+    if let Some(prompt) = initial_prompt {
+        renderer.reset_output();
+        renderer.show_sent(prompt);
+        busy = true;
+        llm_rx = Some(spawn_llm(&runtime, prompt, &session_id));
+    } else {
+        renderer.show_input("");
+    }
+
+    // ── 7. Main loop ────────────────────────────────────────────────
+    loop {
+        tokio::select! {
+            // Input del teclado
+            Some(event) = input_rx.recv() => {
+                match event {
+                    InputEvent::Key(key) => {
+                        use crossterm::event::KeyCode;
+                        match key.code {
+                            KeyCode::Enter => {
+                                let line = input_buffer.trim().to_string();
+                                if line.is_empty() {
+                                    continue;
+                                }
+
+                                match line.as_str() {
+                                    "/exit" | "/quit" => break,
+                                    "/help" => {
+                                        renderer.show_sent(&line);
+                                        eprintln!(
+                                            "┌─ Dogma 2.0 Interactive ─────────────────────────┐\n\
+                                             │ /help        — Show this help                   │\n\
+                                             │ /exit /quit  — Exit interactive mode            │\n\
+                                             │ /status      — Show current session stats       │\n\
+                                             │ <prompt>     — Send prompt to agent             │\n\
+                                             └─────────────────────────────────────────────────┘"
+                                        );
+                                        renderer.show_input("");
+                                    }
+                                    "/status" => {
+                                        renderer.show_sent(&line);
+                                        eprintln!("Session: {session_id}");
+                                        eprintln!("Model: {model_name}");
+                                        eprintln!("Data dir: {}", data_dir.display());
+                                        renderer.show_input("");
+                                    }
+                                    prompt => {
+                                        renderer.reset_output();
+                                        renderer.show_sent(prompt);
+                                        input_buffer.clear();
+                                        renderer.show_input("");
+
+                                        if busy {
+                                            queue.push_back(prompt.to_string());
+                                            renderer.show_queued(prompt);
+                                        } else {
+                                            busy = true;
+                                            renderer.show_busy();
+                                            llm_rx = Some(spawn_llm(&runtime, prompt, &session_id));
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                input_buffer.pop();
+                                renderer.show_input(&input_buffer);
+                            }
+                            KeyCode::Char(c) => {
+                                input_buffer.push(c);
+                                renderer.show_input(&input_buffer);
+                            }
+                            // Scroll keys
+                            KeyCode::PageUp => renderer.scroll_up(),
+                            KeyCode::PageDown => renderer.scroll_down(),
+                            KeyCode::Up => renderer.scroll_up(),
+                            KeyCode::Down => renderer.scroll_down(),
+                            KeyCode::Home => renderer.scroll_top(),
+                            KeyCode::End => renderer.scroll_bottom(),
+                            _ => {}
+                        }
+                    }
+                    InputEvent::Quit => break,
+                    InputEvent::Tick => {
+                        renderer.tick();
+                    }
+                }
+            }
+
+            // Eventos del agente (sub-agentes, tools, status)
+            Some(event) = event_rx.recv() => {
+                renderer.handle_agent_event(event);
+            }
+
+            // Respuesta del LLM
+            Some(result) = async {
+                match llm_rx.as_mut() {
+                    Some(rx) => rx.await.into(),
+                    None => std::future::pending().await,
+                }
+            } => {
+                busy = false;
+                match result {
+                    Ok(Ok(_response)) => {
+                        // Streaming ya mostró el contenido en tiempo real.
+                        // Solo actualizar status bar y mostrar input.
+                        renderer.finish_response();
+                    }
+                    Ok(Err(e)) => {
+                        renderer.show_error(&e.to_string());
+                    }
+                    Err(_) => {
+                        renderer.show_error("LLM task panicked");
+                    }
+                }
+
+                // Procesar cola
+                if let Some(next) = queue.pop_front() {
+                    busy = true;
+                    renderer.show_busy();
+                    llm_rx = Some(spawn_llm(&runtime, &next, &session_id));
+                } else {
+                    llm_rx = None;
+                    renderer.show_input("");
+                }
+            }
+        }
+    }
+
+    // ── 8. Cleanup ──────────────────────────────────────────────────
+    renderer.cleanup();
+
+    emit_event(
+        json_mode,
+        &Event::new(
+            EventType::Done,
+            EventSeverity::Success,
+            "Interactive session completed",
+        )
+        .with_session_id(&session_id),
+    );
 
     Ok(())
 }

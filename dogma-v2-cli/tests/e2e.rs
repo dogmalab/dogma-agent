@@ -90,7 +90,7 @@ async fn test_runtime_loop_returns_mock_response() {
     let tools = create_survival_tools();
     let loop_config = LoopConfig::default();
 
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config, None);
 
     let response = runtime
         .run("Hello from E2E test!", &session_id)
@@ -119,7 +119,7 @@ async fn test_runtime_loop_can_be_called_multiple_times() {
         ..Default::default()
     };
 
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config, None);
 
     // Primera llamada
     let r1 = runtime
@@ -157,7 +157,7 @@ async fn test_session_is_persisted_after_runtime_loop() {
     let tools = create_survival_tools();
     let loop_config = LoopConfig::default();
 
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config, None);
     runtime
         .run("Test persistence", &session_id)
         .await
@@ -188,7 +188,7 @@ async fn test_runtime_loop_with_max_iterations() {
         ..Default::default()
     };
 
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config, None);
     let response = runtime
         .run("Trigger tool calls", &session_id)
         .await
@@ -217,7 +217,7 @@ async fn test_runtime_loop_default_config() {
     let tools = create_survival_tools();
     let loop_config = LoopConfig::default();
 
-    let runtime = RuntimeLoop::new(provider, tools, session, loop_config);
+    let runtime = RuntimeLoop::new(provider, tools, session, loop_config, None);
 
     let response = runtime
         .run("Test default config", &session_id)

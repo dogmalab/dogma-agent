@@ -19,7 +19,9 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY
 use serde_json::Value;
 use tracing::{debug, trace, warn};
 
-use super::{LLMProvider, LLMResponse, Message, MessageRole, ProviderConfig, TokenUsage};
+use super::{
+    LLMProvider, LLMResponse, Message, MessageRole, ProviderConfig, StreamChunk, TokenUsage,
+};
 
 // ---------------------------------------------------------------------------
 // Constantes
@@ -146,6 +148,7 @@ impl OpenAiProvider {
     }
 
     /// Convierte un `Message` interno al formato de la API.
+    /// Incluye todos los campos extra (ej: `reasoning_content` de DeepSeek).
     fn serialize_message(msg: &Message) -> Value {
         let role_str = match msg.role {
             MessageRole::System => "system",
@@ -159,13 +162,10 @@ impl OpenAiProvider {
             "content": msg.content,
         });
 
-        // Si es resultado de tool, añadir tool_call_id
         if let Some(ref call_id) = msg.tool_call_id {
             entry["tool_call_id"] = Value::String(call_id.clone());
         }
 
-        // Si el assistant message tiene tool_calls, serializarlas
-        // en el formato estándar OpenAI
         if !msg.tool_calls.is_empty() {
             let tcs: Vec<Value> = msg
                 .tool_calls
@@ -184,7 +184,7 @@ impl OpenAiProvider {
             entry["tool_calls"] = Value::Array(tcs);
         }
 
-        // Incluir campos extra no-estándar (reasoning_content, thinking, etc.)
+        // Incluir campos extra (reasoning_content de DeepSeek, etc.)
         for (key, val) in &msg.extra_fields {
             entry[key] = val.clone();
         }
@@ -364,6 +364,107 @@ impl LLMProvider for OpenAiProvider {
             extra_fields,
         })
     }
+
+    async fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<StreamChunk>>> {
+        let url = self.chat_url();
+        let mut body = self.build_request_body(messages, tools);
+        body["stream"] = Value::Bool(true);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| DogmaError::Network {
+                detail: format!("streaming request failed: {e}"),
+                source: Some(Box::new(e)),
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let status_code: u16 = status.as_u16();
+            let error_detail = match response.text().await {
+                Ok(text) if !text.is_empty() => {
+                    if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                        val.pointer("/error/message")
+                            .and_then(Value::as_str)
+                            .map(|m| format!("{status_code} — {m}"))
+                            .unwrap_or_else(|| text.chars().take(200).collect())
+                    } else {
+                        text.chars().take(200).collect()
+                    }
+                }
+                _ => status.canonical_reason().unwrap_or("unknown").to_string(),
+            };
+            return Err(DogmaError::Api {
+                status_code,
+                detail: error_detail,
+            });
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+
+        tokio::spawn(async move {
+            use futures::StreamExt;
+
+            let mut stream = response.bytes_stream();
+            let mut buffer = String::new();
+
+            while let Some(chunk_result) = stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(DogmaError::Network {
+                                detail: format!("stream read error: {e}"),
+                                source: Some(Box::new(e)),
+                            }))
+                            .await;
+                        break;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                // Process complete SSE lines
+                while let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].trim().to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+
+                    if line.is_empty() {
+                        continue;
+                    }
+
+                    if line == "data: [DONE]" {
+                        let _ = tx.send(Ok(StreamChunk::Done(TokenUsage::default()))).await;
+                        return;
+                    }
+
+                    if let Some(data) = line.strip_prefix("data: ") {
+                        match serde_json::from_str::<Value>(data) {
+                            Ok(json) => {
+                                if let Some(chunks) = Self::parse_stream_chunk(&json) {
+                                    for chunk in chunks {
+                                        let _ = tx.send(Ok(chunk)).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                debug!("Failed to parse SSE chunk: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(rx)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +564,61 @@ impl OpenAiProvider {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: total,
+        }
+    }
+
+    /// Parsea un chunk SSE del streaming y extrae StreamChunks.
+    fn parse_stream_chunk(json: &Value) -> Option<Vec<StreamChunk>> {
+        let choices = json.get("choices").and_then(Value::as_array)?;
+        let choice = choices.first()?;
+
+        let delta = choice.get("delta")?;
+
+        let mut chunks = Vec::new();
+
+        // Reasoning content (DeepSeek)
+        if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+            if !reasoning.is_empty() {
+                chunks.push(StreamChunk::ReasoningDelta(reasoning.to_string()));
+            }
+        }
+
+        // Content
+        if let Some(content) = delta.get("content").and_then(Value::as_str) {
+            if !content.is_empty() {
+                chunks.push(StreamChunk::ContentDelta(content.to_string()));
+            }
+        }
+
+        // Tool calls
+        if let Some(tc_array) = delta.get("tool_calls").and_then(Value::as_array) {
+            for (i, tc) in tc_array.iter().enumerate() {
+                let id = tc.get("id").and_then(Value::as_str).map(String::from);
+                let name = tc
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(Value::as_str)
+                    .map(String::from);
+                let args = tc
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+
+                chunks.push(StreamChunk::ToolCallDelta {
+                    index: i,
+                    id,
+                    name,
+                    arguments_delta: args,
+                });
+            }
+        }
+
+        if chunks.is_empty() {
+            None
+        } else {
+            Some(chunks)
         }
     }
 }

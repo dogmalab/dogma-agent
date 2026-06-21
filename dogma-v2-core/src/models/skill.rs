@@ -57,15 +57,10 @@ fn default_input_schema() -> Value {
 pub enum SkillPayload {
     /// Un script ejecutable (ej: Python o Bash) que correrá de forma
     /// confinada.
-    ExecutableScript {
-        interpreter: String,
-        code: String,
-    },
+    ExecutableScript { interpreter: String, code: String },
     /// Parches o extensiones del system prompt para alterar el
     /// comportamiento cognitivo.
-    SystemInstructionExtension {
-        system_prompt_patch: String,
-    },
+    SystemInstructionExtension { system_prompt_patch: String },
 }
 
 impl DynamicSkill {

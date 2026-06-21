@@ -13,17 +13,17 @@
 //! El CognitiveMockLLM simula el comportamiento del agente llamando
 //! autónomamente a search_memory y procesando los resultados.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use dogma_v2_common::Result;
 use dogma_v2_core::runtime::loop_handle::{LoopConfig, RuntimeLoop};
 use dogma_v2_core::runtime::provider::{
-    LLMProvider, LLMResponse, Message, MessageRole, ProviderConfig, ToolCall, TokenUsage,
+    LLMProvider, LLMResponse, Message, MessageRole, ProviderConfig, TokenUsage, ToolCall,
 };
 use dogma_v2_core::state::session::SessionManager;
-use dogma_v2_core::tools::{create_survival_tools, SearchMemoryTool};
+use dogma_v2_core::tools::{SearchMemoryTool, create_survival_tools};
 use dogma_vdb::collection::Collection;
 use dogma_vdb::doc::Document;
 use dogma_vdb::embedding::Embedder;
@@ -196,13 +196,11 @@ fn test_provider_config() -> ProviderConfig {
 /// los cargue automáticamente. Esto permite controlar exactamente qué
 /// vectores tiene cada documento, independientemente de `append_message`
 /// (que no computa embeddings).
-fn seed_collection(
-    vdb_path: &std::path::Path,
-    docs: Vec<Document>,
-) {
+fn seed_collection(vdb_path: &std::path::Path, docs: Vec<Document>) {
     let mut col = Collection::open(vdb_path).expect("seed_collection: open collection failed");
     for doc in docs {
-        col.insert(doc).expect("seed_collection: insert document failed");
+        col.insert(doc)
+            .expect("seed_collection: insert document failed");
     }
     // Al dropear `col` se persisten los documentos
 }
@@ -322,14 +320,18 @@ async fn test_needle_in_a_haystack() {
     let config = LoopConfig {
         max_tool_iterations: 5,
         context_compression: false,
+        ..LoopConfig::default()
     };
-    let runtime = RuntimeLoop::new(provider.clone(), tools, session, config);
+    let runtime = RuntimeLoop::new(provider.clone(), tools, session, config, None);
     runtime.register_tool(Box::new(SearchMemoryTool::new(runtime.session_handle())));
 
     // ── Ejecutar y verificar ───────────────────────────────────
     let prompt = "Necesito configurar la conexión segura del gateway. \
                    ¿Cuál era el puerto secreto de comunicación interna?";
-    let response = runtime.run(prompt, sid).await.expect("needle test should succeed");
+    let response = runtime
+        .run(prompt, sid)
+        .await
+        .expect("needle test should succeed");
 
     assert!(
         response.contains(secret_port),
@@ -425,13 +427,17 @@ async fn test_cause_effect_adjacency() {
     let config = LoopConfig {
         max_tool_iterations: 5,
         context_compression: false,
+        ..LoopConfig::default()
     };
-    let runtime = RuntimeLoop::new(provider.clone(), tools, session, config);
+    let runtime = RuntimeLoop::new(provider.clone(), tools, session, config, None);
     runtime.register_tool(Box::new(SearchMemoryTool::new(runtime.session_handle())));
 
     // ── Ejecutar y verificar ───────────────────────────────────
     let prompt = "¿Por qué falló el script que ejecutamos con cat?";
-    let response = runtime.run(prompt, sid).await.expect("cause-effect test should succeed");
+    let response = runtime
+        .run(prompt, sid)
+        .await
+        .expect("cause-effect test should succeed");
 
     assert!(
         response.contains(expected_cause) && response.contains(expected_effect),
@@ -520,30 +526,31 @@ async fn test_context_drift_semantic_isolation() {
         "similarity", // Pure similarity para evitar bias temporal
         0,
         "page faults impredecibles",
-        format!(
-            "Las desventajas de mmap en embebidos incluyen: {expected_tech_content}."
-        ),
+        format!("Las desventajas de mmap en embebidos incluyen: {expected_tech_content}."),
     ));
 
     let tools = create_survival_tools();
     let config = LoopConfig {
         max_tool_iterations: 5,
         context_compression: false,
+        ..LoopConfig::default()
     };
-    let runtime = RuntimeLoop::new(provider.clone(), tools, session, config);
+    let runtime = RuntimeLoop::new(provider.clone(), tools, session, config, None);
     runtime.register_tool(Box::new(SearchMemoryTool::new(runtime.session_handle())));
 
     // ── Ejecutar y verificar ───────────────────────────────────
     let prompt = "¿Qué desventajas mencionamos sobre usar mmap en sistemas embebidos?";
-    let response = runtime.run(prompt, sid).await.expect("context drift test should succeed");
+    let response = runtime
+        .run(prompt, sid)
+        .await
+        .expect("context drift test should succeed");
 
     assert!(
         response.contains("mmap") && response.contains("page faults"),
         "❌ Context Drift test FAILED: respuesta no contiene información técnica.\n  respuesta: {response}"
     );
     assert!(
-        !response.to_lowercase().contains("pesto")
-            && !response.to_lowercase().contains("albahaca"),
+        !response.to_lowercase().contains("pesto") && !response.to_lowercase().contains("albahaca"),
         "❌ Context Drift test FAILED: respuesta contiene contaminación de cocina.\n  respuesta: {response}"
     );
     println!("✅ Context Drift (aislamiento semántico): PASS — ruido temático ignorado");

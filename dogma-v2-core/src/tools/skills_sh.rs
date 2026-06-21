@@ -22,8 +22,8 @@ use crate::runtime::provider::{LLMProvider, LLMResponse, Message, MessageRole};
 use crate::tools::security::ToolGuardrail;
 use crate::tools::{Tool, ToolResult};
 use async_trait::async_trait;
-use dogma_v2_common::error::Error as DogmaError;
 use dogma_v2_common::Result;
+use dogma_v2_common::error::Error as DogmaError;
 use dogma_vdb::collection::Collection;
 use dogma_vdb::doc::Document;
 use serde::{Deserialize, Serialize};
@@ -86,11 +86,10 @@ impl SkillManager {
         })?;
 
         let vdb_path = base_path.join("skills.vdb");
-        let collection =
-            Collection::open(&vdb_path).map_err(|e| DogmaError::Io {
-                path: vdb_path,
-                source: std::io::Error::other(e.to_string()),
-            })?;
+        let collection = Collection::open(&vdb_path).map_err(|e| DogmaError::Io {
+            path: vdb_path,
+            source: std::io::Error::other(e.to_string()),
+        })?;
 
         info!("SkillManager opened at {}", base_path.display());
         Ok(Self {
@@ -132,9 +131,9 @@ impl SkillManager {
 
         let document = doc.build();
 
-        self.collection.insert(document).map_err(|e| {
-            DogmaError::StorageCorrupted(format!("failed to insert skill: {e}"))
-        })?;
+        self.collection
+            .insert(document)
+            .map_err(|e| DogmaError::StorageCorrupted(format!("failed to insert skill: {e}")))?;
 
         debug!("Skill '{}' persisted to skills.vdb", skill.name);
         Ok(())
@@ -154,17 +153,24 @@ impl SkillManager {
         );
 
         if !skill.trigger_examples.is_empty() {
-            text.push_str(&format!("Triggers: {}\n", skill.trigger_examples.join(", ")));
+            text.push_str(&format!(
+                "Triggers: {}\n",
+                skill.trigger_examples.join(", ")
+            ));
         }
 
         match &skill.payload {
             SkillPayload::ExecutableScript { interpreter, code } => {
-                text.push_str(&format!("Type: executable\nInterpreter: {interpreter}\nCode:\n{code}"));
+                text.push_str(&format!(
+                    "Type: executable\nInterpreter: {interpreter}\nCode:\n{code}"
+                ));
             }
             SkillPayload::SystemInstructionExtension {
                 system_prompt_patch,
             } => {
-                text.push_str(&format!("Type: system_prompt_extension\nPatch:\n{system_prompt_patch}"));
+                text.push_str(&format!(
+                    "Type: system_prompt_extension\nPatch:\n{system_prompt_patch}"
+                ));
             }
         }
 
@@ -331,7 +337,9 @@ el esquema: {\"approved\": bool, \"risk_score\": float, \"findings\": [string]}"
         // Serializar el payload para el prompt de usuario
         let payload_desc = match &skill.payload {
             SkillPayload::ExecutableScript { interpreter, code } => {
-                format!("Tipo: Script ejecutable\nInterprete: {interpreter}\nCodigo:\n```\n{code}\n```")
+                format!(
+                    "Tipo: Script ejecutable\nInterprete: {interpreter}\nCodigo:\n```\n{code}\n```"
+                )
             }
             SkillPayload::SystemInstructionExtension {
                 system_prompt_patch,
@@ -358,10 +366,10 @@ el esquema: {\"approved\": bool, \"risk_score\": float, \"findings\": [string]}"
 
         debug!("Running cognitive audit on skill '{}'", skill.name);
         let response: LLMResponse = llm.chat(&messages, &[]).await.map_err(|e| {
-                DogmaError::Internal(format!(
-                    "Cognitive auditor LLM call failed for skill '{}': {e}",
-                    skill.name
-                ))
+            DogmaError::Internal(format!(
+                "Cognitive auditor LLM call failed for skill '{}': {e}",
+                skill.name
+            ))
         })?;
 
         let content = response.content;
@@ -375,11 +383,11 @@ el esquema: {\"approved\": bool, \"risk_score\": float, \"findings\": [string]}"
         let json_str = strip_markdown_fence(&content);
         let report: CognitiveAuditReport = serde_json::from_str(json_str).map_err(|e| {
             DogmaError::Internal(format!(
-                    "Failed to parse cognitive audit report for skill '{}': {e}. \
+                "Failed to parse cognitive audit report for skill '{}': {e}. \
                      Raw response (first 500 chars): {}",
-                    skill.name,
-                    &content.chars().take(500).collect::<String>()
-                ))
+                skill.name,
+                &content.chars().take(500).collect::<String>()
+            ))
         })?;
 
         debug!(
@@ -443,10 +451,7 @@ impl InstallSkillTool {
     /// # Errors
     ///
     /// Devuelve error de I/O si no se puede abrir la colección de skills.
-    pub fn new(
-        auditor_llm: Arc<dyn LLMProvider>,
-        data_dir: impl Into<PathBuf>,
-    ) -> Result<Self> {
+    pub fn new(auditor_llm: Arc<dyn LLMProvider>, data_dir: impl Into<PathBuf>) -> Result<Self> {
         let skill_manager = SkillManager::open(data_dir)?;
         Ok(Self {
             auditor_llm,
@@ -530,9 +535,9 @@ impl Tool for InstallSkillTool {
         // 3. Persistir en dogma-vdb
         {
             let mut manager = self.skill_manager.lock();
-            manager.insert_skill(&skill).map_err(|e| {
-                format!("failed to persist skill '{}': {e}", skill.name)
-            })?;
+            manager
+                .insert_skill(&skill)
+                .map_err(|e| format!("failed to persist skill '{}': {e}", skill.name))?;
         }
 
         let msg = format!(
@@ -545,7 +550,9 @@ impl Tool for InstallSkillTool {
             skill.description,
             skill.trigger_examples,
             match skill.payload {
-                SkillPayload::ExecutableScript { ref interpreter, .. } => {
+                SkillPayload::ExecutableScript {
+                    ref interpreter, ..
+                } => {
                     format!("executable/{interpreter}")
                 }
                 SkillPayload::SystemInstructionExtension { .. } => {
@@ -610,7 +617,8 @@ mod tests {
 
     #[test]
     fn test_cognitive_audit_report_malicious() {
-        let json = r#"{"approved": false, "risk_score": 0.9, "findings": ["data exfiltration detected"]}"#;
+        let json =
+            r#"{"approved": false, "risk_score": 0.9, "findings": ["data exfiltration detected"]}"#;
         let report: CognitiveAuditReport = serde_json::from_str(json).expect("valid JSON");
         assert!(!report.approved);
         assert!((report.risk_score - 0.9).abs() < f32::EPSILON);
@@ -619,9 +627,15 @@ mod tests {
     #[tokio::test]
     async fn test_download_payload_legitimate() {
         let client = SkillsShClient::new();
-        let skill = client.download_payload("format-json").await.expect("download");
+        let skill = client
+            .download_payload("format-json")
+            .await
+            .expect("download");
         assert_eq!(skill.name, "Format JSON");
-        assert!(matches!(skill.payload, SkillPayload::ExecutableScript { .. }));
+        assert!(matches!(
+            skill.payload,
+            SkillPayload::ExecutableScript { .. }
+        ));
     }
 
     #[tokio::test]
@@ -632,7 +646,10 @@ mod tests {
             .await
             .expect("download");
         assert_eq!(skill.name, "Fuga Sutil");
-        assert!(matches!(skill.payload, SkillPayload::ExecutableScript { .. }));
+        assert!(matches!(
+            skill.payload,
+            SkillPayload::ExecutableScript { .. }
+        ));
     }
 
     #[test]

@@ -124,9 +124,7 @@ impl SearchMemoryTool {
         // Contar cuántos vecinos comparten el mismo parent_id
         let shared = neighbors
             .iter()
-            .filter(|n| {
-                n.node_id != node.node_id && n.parent_id.as_deref() == Some(parent_id)
-            })
+            .filter(|n| n.node_id != node.node_id && n.parent_id.as_deref() == Some(parent_id))
             .count();
 
         // Normalizar: ratio de vecinos que comparten parent
@@ -162,10 +160,7 @@ impl SearchMemoryTool {
                     let truncated = &m.content[..remaining.min(m.content.len())];
                     output.push_str(&format!("{label}\n{truncated}…\n\n"));
                 }
-                output.push_str(&format!(
-                    "[… truncated at {} character limit]\n",
-                    max_chars
-                ));
+                output.push_str(&format!("[… truncated at {} character limit]\n", max_chars));
                 break;
             }
 
@@ -387,14 +382,10 @@ mod tests {
     #[test]
     fn test_recency_score_old() {
         // Un timestamp de hace varios días debería dar score bajo
-        let old = chrono::Utc::now()
-            - chrono::Duration::days(7);
+        let old = chrono::Utc::now() - chrono::Duration::days(7);
         let ts = old.to_rfc3339();
         let score = SearchMemoryTool::recency_score(Some(&ts));
-        assert!(
-            score < 0.3,
-            "Old timestamp should score < 0.3, got {score}"
-        );
+        assert!(score < 0.3, "Old timestamp should score < 0.3, got {score}");
     }
 
     #[test]
@@ -414,7 +405,10 @@ mod tests {
 
         // id-1 comparte parent-1 con id-2 → 1 de 2 vecinos = 0.5
         let score = SearchMemoryTool::adjacency_score(&node, &neighbors);
-        assert!((score - 0.5).abs() < f32::EPSILON, "Expected 0.5, got {score}");
+        assert!(
+            (score - 0.5).abs() < f32::EPSILON,
+            "Expected 0.5, got {score}"
+        );
     }
 
     #[test]
@@ -440,10 +434,20 @@ mod tests {
 
     #[test]
     fn test_hybrid_score_default_weights() {
-        let node = make_match("id-1", "content", 0.8, Some("2024-01-01T00:00:00Z"), Some("p1"));
-        let neighbors = vec![
-            make_match("id-2", "other", 0.5, Some("2024-01-01T00:00:00Z"), Some("p1")),
-        ];
+        let node = make_match(
+            "id-1",
+            "content",
+            0.8,
+            Some("2024-01-01T00:00:00Z"),
+            Some("p1"),
+        );
+        let neighbors = vec![make_match(
+            "id-2",
+            "other",
+            0.5,
+            Some("2024-01-01T00:00:00Z"),
+            Some("p1"),
+        )];
 
         // Default: α=0.5, β=0.3, γ=0.2
         // cos_sim=0.8, recency≈0.0 (very old), adjacency=1.0 (only neighbor shares parent)
@@ -459,7 +463,10 @@ mod tests {
 
         // Pure similarity: α=1.0, β=0.0, γ=0.0
         let score = SearchMemoryTool::hybrid_score(&node, &neighbors, 1.0, 0.0, 0.0);
-        assert!((score - 0.9).abs() < f32::EPSILON, "Expected 0.9, got {score}");
+        assert!(
+            (score - 0.9).abs() < f32::EPSILON,
+            "Expected 0.9, got {score}"
+        );
     }
 
     #[test]
@@ -471,9 +478,13 @@ mod tests {
 
     #[test]
     fn test_format_results_truncation() {
-        let matches = [
-            make_match("id-1", "A very long content that should be truncated by the formatter", 0.9, None, None),
-        ];
+        let matches = [make_match(
+            "id-1",
+            "A very long content that should be truncated by the formatter",
+            0.9,
+            None,
+            None,
+        )];
         let scored: Vec<(f32, &SemanticMatch)> = matches.iter().map(|m| (0.5, m)).collect();
         let result = SearchMemoryTool::format_results(&scored, 20);
         // Should be truncated since content is longer than 20 chars
@@ -489,7 +500,11 @@ mod tests {
 
         let result = tool.call(&serde_json::json!({})).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("missing required argument: query"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("missing required argument: query")
+        );
     }
 
     #[tokio::test]
@@ -520,6 +535,11 @@ mod tests {
         let params = tool.parameters();
         assert!(params.get("properties").is_some());
         assert!(params.get("required").is_some());
-        assert!(params["required"].as_array().unwrap().contains(&serde_json::Value::String("query".to_string())));
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::Value::String("query".to_string()))
+        );
     }
 }

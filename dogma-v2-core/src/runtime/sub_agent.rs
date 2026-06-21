@@ -28,12 +28,14 @@
 
 use std::sync::Arc;
 
-use dogma_v2_common::error::Error;
 use dogma_v2_common::Result;
+use dogma_v2_common::error::Error;
 use parking_lot::RwLock;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use crate::models::delegation::{AgentGoal, AgentRole, DelegateTaskArgs, SubAgentConfig};
+use crate::models::events::AgentEvent;
 use crate::runtime::loop_handle::RuntimeLoop;
 use crate::state::session::SessionManager;
 use crate::tools::ToolRegistry;
@@ -45,7 +47,6 @@ use crate::tools::ToolRegistry;
 ///
 /// Se construye con una referencia al `RuntimeLoop` padre. Cada
 /// llamada a `dispatch` crea una sesión aislada y ejecuta el ciclo
-/// RSI dentro de esa sesión.
 pub struct SubAgentManager {
     runtime: Arc<RuntimeLoop>,
     #[allow(dead_code)]
@@ -54,12 +55,15 @@ pub struct SubAgentManager {
     config: SubAgentConfig,
     /// Registro de todas las metas creadas y su estado actual.
     goals: RwLock<Vec<AgentGoal>>,
+    /// Canal opcional para emitir eventos hacia la UI.
+    event_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
 impl std::fmt::Debug for SubAgentManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SubAgentManager")
             .field("config", &self.config)
+            .field("goals", &self.goals.read().len())
             .finish_non_exhaustive()
     }
 }
@@ -67,19 +71,19 @@ impl std::fmt::Debug for SubAgentManager {
 impl SubAgentManager {
     /// Crea un nuevo `SubAgentManager` a partir del `RuntimeLoop` padre.
     ///
-    /// # Parámetros
-    ///
-    /// * `runtime` — RuntimeLoop del agente padre (Arc compartido).
-    /// * `config` — Configuración de delegación (profundidad, rol, etc.).
+    /// El canal de eventos se obtiene automáticamente del runtime
+    /// si fue configurado.
     pub fn new(runtime: Arc<RuntimeLoop>, config: SubAgentConfig) -> Self {
         let tools = runtime.tool_registry();
         let session = runtime.session_handle();
+        let event_tx = runtime.event_tx();
         Self {
             runtime,
             tools,
             session,
             config,
             goals: RwLock::new(Vec::new()),
+            event_tx,
         }
     }
 
@@ -93,6 +97,10 @@ impl SubAgentManager {
         let goal = AgentGoal::new(args.task_objective.clone(), &args.context);
         let goal_id = goal.id.clone();
         let criteria_count = goal.criteria_count();
+        let description = goal.description.clone();
+        let depth = args
+            .role
+            .map_or(0, |r| if r.can_delegate() { 1 } else { 0 });
 
         {
             let mut goals = self.goals.write();
@@ -104,6 +112,12 @@ impl SubAgentManager {
             criteria = criteria_count,
             "AgentGoal created"
         );
+
+        // Emitir evento a la UI (si está conectada)
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.try_send(AgentEvent::spawned(goal_id.clone(), description, depth));
+        }
+
         goal_id
     }
 
@@ -114,11 +128,22 @@ impl SubAgentManager {
         let mut goals = self.goals.write();
         if let Some(goal) = goals.iter_mut().find(|g| g.id == goal_id) {
             goal.complete();
+            let description = goal.description.clone();
+            let depth = 0; // no tenemos depth aquí, pero 0 es seguro
             info!(
                 goal_id = goal_id,
-                description = &goal.description,
+                description = &description,
                 "AgentGoal completed"
             );
+            // Emitir evento de completado a la UI
+            if let Some(ref tx) = self.event_tx {
+                let _ = tx.try_send(AgentEvent::goal_evaluated(
+                    goal_id.to_string(),
+                    description,
+                    true,
+                    depth,
+                ));
+            }
         } else {
             warn!(goal_id = goal_id, "AgentGoal not found for completion");
         }
@@ -128,12 +153,22 @@ impl SubAgentManager {
     fn fail_goal(&self, goal_id: &str, reason: &str) {
         let mut goals = self.goals.write();
         if let Some(goal) = goals.iter_mut().find(|g| g.id == goal_id) {
+            let description = goal.description.clone();
             error!(
                 goal_id = goal_id,
-                description = &goal.description,
+                description = &description,
                 reason = reason,
                 "AgentGoal failed"
             );
+            // Emitir evento de fallo a la UI
+            if let Some(ref tx) = self.event_tx {
+                let _ = tx.try_send(AgentEvent::goal_evaluated(
+                    goal_id.to_string(),
+                    description,
+                    false,
+                    0,
+                ));
+            }
         }
     }
 
@@ -204,7 +239,11 @@ impl SubAgentManager {
         // ── 4. Crear sesión aislada ────────────────────────────────
         let session_id = format!(
             "sub_{}_depth_{}",
-            uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"),
+            uuid::Uuid::new_v4()
+                .to_string()
+                .split('-')
+                .next()
+                .unwrap_or("x"),
             child_depth,
         );
 
@@ -234,9 +273,25 @@ impl SubAgentManager {
         // filtrado por toolsets a nivel de RuntimeLoop.
         self.apply_tools_filter(&child_role, &args.toolsets);
 
+        // ── 6. Inyectar skills en el contexto del sub-agente ────────
+        let final_prompt = if let Some(ref skills) = args.skills {
+            if !skills.is_empty() {
+                let skill_list = skills.join(", ");
+                format!(
+                    "{prompt}\n\n--- Installed Skills ---\n\
+                     The following skills are available in this context: {skill_list}.\n\
+                     You may use these skills by calling install_skill with their IDs."
+                )
+            } else {
+                prompt
+            }
+        } else {
+            prompt
+        };
+
         // ── 7. Ejecutar ciclo RSI ──────────────────────────────────
         info!("Running sub-agent: {session_id}");
-        match self.runtime.run(&prompt, &session_id).await {
+        match self.runtime.run(&final_prompt, &session_id).await {
             Ok(result) => {
                 debug!("Sub-agent {session_id} completed successfully");
                 self.complete_goal(&goal_id);
@@ -342,7 +397,7 @@ mod tests {
         let session = SessionManager::open(dir.path()).expect("test session");
 
         (
-            Arc::new(RuntimeLoop::new(provider, tools, session, config)),
+            Arc::new(RuntimeLoop::new(provider, tools, session, config, None)),
             dir,
         )
     }
@@ -363,15 +418,13 @@ mod tests {
             context: String::new(),
             role: None,
             toolsets: None,
+            skills: None,
         };
 
         let result = manager.dispatch(args).await;
         assert!(result.is_err(), "Should reject at max depth");
         let err = result.unwrap_err();
-        assert!(
-            err.to_string().contains("Max spawn depth"),
-            "Error: {err}"
-        );
+        assert!(err.to_string().contains("Max spawn depth"), "Error: {err}");
     }
 
     #[test]
@@ -399,6 +452,7 @@ mod tests {
             context: "- [ ] Run tests\n- [ ] Update docs".into(),
             role: None,
             toolsets: None,
+            skills: None,
         };
 
         let result = manager.dispatch(args).await;
@@ -428,6 +482,7 @@ mod tests {
             context: String::new(),
             role: None,
             toolsets: None,
+            skills: None,
         };
 
         let result = manager.dispatch(args).await;
@@ -448,6 +503,7 @@ mod tests {
                 context: String::new(),
                 role: None,
                 toolsets: None,
+                skills: None,
             };
             let _ = manager.dispatch(args).await;
         }

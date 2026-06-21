@@ -68,10 +68,7 @@ fn test_security_sandbox_suite() {
     // ── 3. Relative path inside CWD (allowed) ────────────────────
     {
         let result = ToolGuardrail::validate_path("Cargo.toml");
-        assert!(
-            result.is_ok(),
-            "Cargo.toml in CWD should be allowed"
-        );
+        assert!(result.is_ok(), "Cargo.toml in CWD should be allowed");
         if let Ok(p) = result {
             assert!(p.is_absolute(), "validated path should be absolute");
             assert!(
@@ -84,10 +81,7 @@ fn test_security_sandbox_suite() {
     // ── 4. /tmp is allowed ──────────────────────────────────────
     {
         let result = ToolGuardrail::validate_path("/tmp");
-        assert!(
-            result.is_ok(),
-            "/tmp should be allowed"
-        );
+        assert!(result.is_ok(), "/tmp should be allowed");
     }
 
     // ── 5. New file in allowed dir (write scenario) ──────────────
@@ -104,10 +98,7 @@ fn test_security_sandbox_suite() {
     // ── 6. New file outside allowed dirs ─────────────────────────
     {
         let result = ToolGuardrail::validate_path("/etc/_dogma_test_new_file.txt");
-        assert!(
-            result.is_err(),
-            "new file in /etc should be blocked"
-        );
+        assert!(result.is_err(), "new file in /etc should be blocked");
     }
 
     // ── 7. Command inspection: sudo ─────────────────────────────
@@ -155,7 +146,8 @@ fn test_security_sandbox_suite() {
     // ── 11. Python scripts are NOT inspected in SemiAutonomous ──
     {
         use dogma_v2_core::tools::CommandVerdict;
-        let verdict = ToolGuardrail::inspect_command("python", "import os; os.system('sudo rm -rf /')");
+        let verdict =
+            ToolGuardrail::inspect_command("python", "import os; os.system('sudo rm -rf /')");
         assert!(
             matches!(&verdict, CommandVerdict::Allowed),
             "python scripts should be allowed in semi mode, got: {verdict:?}"

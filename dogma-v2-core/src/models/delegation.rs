@@ -149,6 +149,10 @@ pub struct DelegateTaskArgs {
     pub role: Option<AgentRole>,
     /// Filtro opcional de toolsets. Si se omite, hereda los del padre.
     pub toolsets: Option<Vec<String>>,
+    /// Skills opcionales para instalar en el contexto del subagente.
+    /// Cada string es un skill_id válido en skills.sh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +189,11 @@ impl AgentGoal {
     pub fn new(description: String, context: &str) -> Self {
         let id = format!(
             "goal_{}",
-            uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x")
+            uuid::Uuid::new_v4()
+                .to_string()
+                .split('-')
+                .next()
+                .unwrap_or("x")
         );
 
         // Extraer criterios del context: líneas que empiezan con "- [ ]"
@@ -302,6 +310,7 @@ mod tests {
             context: "Checklist:\n1. Run tests\n2. Update docs".into(),
             role: Some(AgentRole::Orchestrator),
             toolsets: Some(vec!["file".into(), "terminal".into()]),
+            skills: None,
         };
 
         let json = serde_json::to_value(&args).expect("serialize");
@@ -309,8 +318,7 @@ mod tests {
         assert_eq!(json["role"], "orchestrator");
 
         // round-trip
-        let deserialized: DelegateTaskArgs =
-            serde_json::from_value(json).expect("deserialize");
+        let deserialized: DelegateTaskArgs = serde_json::from_value(json).expect("deserialize");
         assert_eq!(deserialized.task_objective, args.task_objective);
         assert_eq!(deserialized.role, args.role);
         assert_eq!(deserialized.toolsets, args.toolsets);
@@ -323,6 +331,7 @@ mod tests {
             context: String::new(),
             role: None,
             toolsets: None,
+            skills: None,
         };
         assert!(args.role.is_none());
     }

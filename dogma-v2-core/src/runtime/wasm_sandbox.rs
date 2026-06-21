@@ -30,13 +30,13 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use dogma_v2_common::error::Error;
 use dogma_v2_common::Result;
+use dogma_v2_common::error::Error;
 use tracing::{debug, error, warn};
 use wasmtime::*;
-use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::p2::OutputFile;
 use wasmtime_wasi::p2::WasiCtxBuilder;
+use wasmtime_wasi::preview1::{self, WasiP1Ctx};
 use wasmtime_wasi::{DirPerms, FilePerms};
 
 // ── Límites ────────────────────────────────────────────────────────────
@@ -195,10 +195,7 @@ impl WasmSandbox {
         args: &[String],
     ) -> Result<SandboxOutput> {
         // ── Directorio temporal para capturar output ──────────────
-        let tmp_root = limits
-            .temp_dir
-            .clone()
-            .unwrap_or_else(std::env::temp_dir);
+        let tmp_root = limits.temp_dir.clone().unwrap_or_else(std::env::temp_dir);
         let session_dir = tmp_root.join(format!("wasm_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&session_dir).map_err(|e| Error::Sandbox {
             detail: format!("cannot create temp dir: {e}"),
@@ -293,10 +290,7 @@ impl WasmSandbox {
             builder
                 .preopened_dir(ws_path, "/", DirPerms::all(), FilePerms::all())
                 .map_err(|e| Error::Sandbox {
-                    detail: format!(
-                        "cannot preopen dir '{}': {e}",
-                        ws_path.display()
-                    ),
+                    detail: format!("cannot preopen dir '{}': {e}", ws_path.display()),
                 })?;
         } else {
             warn!(
@@ -372,10 +366,7 @@ impl WasmSandbox {
 /// binario Wasm válido.
 pub fn sandbox_from_file(path: impl AsRef<Path>) -> Result<WasmSandbox> {
     let bytes = std::fs::read(path.as_ref()).map_err(|e| Error::Sandbox {
-        detail: format!(
-            "cannot read wasm file '{}': {e}",
-            path.as_ref().display()
-        ),
+        detail: format!("cannot read wasm file '{}': {e}", path.as_ref().display()),
     })?;
     WasmSandbox::new(&bytes)
 }
@@ -459,9 +450,20 @@ mod tests {
         let limits = SandboxLimits::minimal();
         let args: Vec<String> = vec![];
 
-        let output = sandbox.run_captured(&limits, &args).await.expect("execution");
-        assert!(output.stdout.contains("hello from wasm"), "stdout: {:?}", output.stdout);
-        assert!(output.stderr.contains("error msg"), "stderr: {:?}", output.stderr);
+        let output = sandbox
+            .run_captured(&limits, &args)
+            .await
+            .expect("execution");
+        assert!(
+            output.stdout.contains("hello from wasm"),
+            "stdout: {:?}",
+            output.stdout
+        );
+        assert!(
+            output.stderr.contains("error msg"),
+            "stderr: {:?}",
+            output.stderr
+        );
         assert!(
             output.fuel_remaining < 100_000,
             "fuel_remaining: {}",
@@ -476,7 +478,10 @@ mod tests {
         let limits = SandboxLimits::minimal();
         let args: Vec<String> = vec![];
 
-        let output = sandbox.run_captured(&limits, &args).await.expect("execution");
+        let output = sandbox
+            .run_captured(&limits, &args)
+            .await
+            .expect("execution");
         assert!(output.stdout.is_empty(), "stdout: {:?}", output.stdout);
         assert!(output.stderr.is_empty(), "stderr: {:?}", output.stderr);
     }
@@ -513,7 +518,10 @@ mod tests {
         let limits = SandboxLimits::minimal();
         let args: Vec<String> = vec![];
 
-        let output = sandbox.run_captured(&limits, &args).await.expect("execution");
+        let output = sandbox
+            .run_captured(&limits, &args)
+            .await
+            .expect("execution");
         assert!(output.stdout.is_empty());
     }
 
@@ -551,7 +559,10 @@ mod tests {
         let sandbox = WasmSandbox::new(&wasm).expect("sandbox creation");
         let limits = SandboxLimits::generous();
         let args: Vec<String> = vec![];
-        let output = sandbox.run_captured(&limits, &args).await.expect("execution");
+        let output = sandbox
+            .run_captured(&limits, &args)
+            .await
+            .expect("execution");
         assert!(output.stdout.contains("hello from wasm"));
         assert!(
             output.fuel_remaining > 0,

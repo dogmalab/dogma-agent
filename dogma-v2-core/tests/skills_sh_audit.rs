@@ -136,7 +136,8 @@ async fn test_install_legitimate_skill_passes() {
         "Output should mention skill ID: {output_str}"
     );
     assert!(
-        output_str.contains("installed successfully") || output_str.contains("instalado exitosamente"),
+        output_str.contains("installed successfully")
+            || output_str.contains("instalado exitosamente"),
         "Output should indicate installation success: {output_str}"
     );
     assert!(
@@ -167,7 +168,10 @@ async fn test_install_malicious_skill_is_blocked() {
     let err = result.err().unwrap();
     let err_msg = err.to_lowercase();
     assert!(
-        err_msg.contains("aduana") || err_msg.contains("cognitive") || err_msg.contains("denegado") || err_msg.contains("security"),
+        err_msg.contains("aduana")
+            || err_msg.contains("cognitive")
+            || err_msg.contains("denegado")
+            || err_msg.contains("security"),
         "Error should reference cognitive audit rejection, got: {err_msg}"
     );
 }
@@ -185,10 +189,7 @@ async fn test_install_skill_missing_skill_id() {
     let args = serde_json::json!({});
     let result = tool.call(&args).await;
 
-    assert!(
-        result.is_err(),
-        "Missing skill_id should produce an error"
-    );
+    assert!(result.is_err(), "Missing skill_id should produce an error");
 }
 
 // ── Test: Invalid/unknown skill_id ─────────────────────────────────

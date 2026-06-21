@@ -47,8 +47,8 @@ impl Tool for ReadFileTool {
         // Validar path contra los guardrails de seguridad
         let validated_path = ToolGuardrail::validate_path(path)?;
 
-        let metadata = std::fs::metadata(&validated_path)
-            .map_err(|e| format!("cannot access {path}: {e}"))?;
+        let metadata =
+            std::fs::metadata(&validated_path).map_err(|e| format!("cannot access {path}: {e}"))?;
 
         if metadata.len() > MAX_READ_SIZE {
             return Err(format!(

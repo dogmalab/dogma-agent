@@ -4,4 +4,7 @@
 //! runtime y capas de persistencia.
 
 pub mod delegation;
+pub mod events;
+pub mod memory;
+pub mod plan;
 pub mod skill;

@@ -158,36 +158,71 @@ pub struct TokenUsage {
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     /// Envía un historial de mensajes al LLM y devuelve la respuesta.
-    ///
-    /// `tools` son las especificaciones de herramientas en formato OpenAI
-    /// (tipo `function` con name/description/parameters). Si está vacío,
-    /// el LLM no tendrá herramientas disponibles.
-    ///
-    /// # Errors
-    ///
-    /// Devuelve `Error::Network` si hay problemas de conexión,
-    /// `Error::Api` si el proveedor devuelve un error HTTP,
-    /// `Error::RateLimited` si se excede el rate limit.
     async fn chat(&self, messages: &[Message], tools: &[serde_json::Value]) -> Result<LLMResponse>;
 
-    /// Envía un historial de mensajes y devuelve un stream de la respuesta.
+    /// Envía un historial de mensajes y devuelve un stream de chunks.
     ///
     /// La implementación por defecto delega en `chat()` y envuelve el
-    /// resultado en un stream de un solo elemento.
+    /// resultado en un stream de chunks.
     async fn chat_stream(
         &self,
         messages: &[Message],
         tools: &[serde_json::Value],
-    ) -> Result<tokio::sync::mpsc::Receiver<std::result::Result<String, dogma_v2_common::Error>>>
-    {
+    ) -> Result<tokio::sync::mpsc::Receiver<Result<StreamChunk>>> {
         let response = self.chat(messages, tools).await?;
         let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let _ = tx.send(Ok(response.content)).await;
-        // Drop tx to close the receiver
+
+        // Emit reasoning if present
+        for (key, val) in &response.extra_fields {
+            if key == "reasoning_content" {
+                if let Some(s) = val.as_str() {
+                    let _ = tx
+                        .send(Ok(StreamChunk::ReasoningDelta(s.to_string())))
+                        .await;
+                }
+            }
+        }
+
+        // Emit content
+        let _ = tx
+            .send(Ok(StreamChunk::ContentDelta(response.content)))
+            .await;
+
+        // Emit tool calls
+        for (i, tc) in response.tool_calls.iter().enumerate() {
+            let _ = tx
+                .send(Ok(StreamChunk::ToolCallDelta {
+                    index: i,
+                    id: Some(tc.id.clone()),
+                    name: Some(tc.name.clone()),
+                    arguments_delta: tc.arguments.clone(),
+                }))
+                .await;
+        }
+
+        let _ = tx.send(Ok(StreamChunk::Done(response.usage))).await;
         drop(tx);
         Ok(rx)
     }
 
     /// Devuelve la configuración activa del proveedor.
     fn config(&self) -> &ProviderConfig;
+}
+
+/// Un chunk de una respuesta streaming.
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    /// Delta de reasoning/thinking (DeepSeek `reasoning_content`).
+    ReasoningDelta(String),
+    /// Delta del contenido de la respuesta final.
+    ContentDelta(String),
+    /// Delta de una tool call (argumentos parciales).
+    ToolCallDelta {
+        index: usize,
+        id: Option<String>,
+        name: Option<String>,
+        arguments_delta: String,
+    },
+    /// Estadísticas de uso de tokens (solo en el último chunk).
+    Done(TokenUsage),
 }

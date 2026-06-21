@@ -29,7 +29,7 @@ use dogma_vdb::doc::Document;
 use dogma_vdb::embedding::Embedder;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Gestiona las sesiones del agente como nodos en dogma-vdb.
 pub struct SessionManager {
@@ -106,6 +106,9 @@ impl SessionManager {
 
     /// Añade un mensaje a la sesión.
     ///
+    /// `extra_fields` permite almacenar campos adicionales del proveedor
+    /// (ej: `reasoning_content` de DeepSeek) para preservarlos en el historial.
+    ///
     /// # Errors
     ///
     /// Devuelve error de I/O si no se puede persistir.
@@ -114,6 +117,7 @@ impl SessionManager {
         session_id: &str,
         role: MessageRole,
         content: &str,
+        extra_fields: &[(String, serde_json::Value)],
     ) -> Result<String> {
         let node_id = format!("msg-{}", uuid::Uuid::new_v4());
         let seq = self.next_sequence(session_id)?;
@@ -125,14 +129,22 @@ impl SessionManager {
             MessageRole::Tool => "tool",
         };
 
-        let doc = Document::builder(&node_id, content)
+        let mut builder = Document::builder(&node_id, content)
             .metadata("node_type", "Message")
             .metadata("session_id", session_id)
             .metadata("role", role_str)
             .metadata("sequence", seq.to_string())
             .metadata("edge_type", "NEXT")
-            .metadata("created_at", chrono::Utc::now().to_rfc3339())
-            .build();
+            .metadata("created_at", chrono::Utc::now().to_rfc3339());
+
+        // Persistir extra_fields como JSON serializado
+        if !extra_fields.is_empty() {
+            let extra_json =
+                serde_json::to_string(extra_fields).unwrap_or_else(|_| "[]".to_string());
+            builder = builder.metadata("extra_fields", &extra_json);
+        }
+
+        let doc = builder.build();
 
         self.collection
             .insert(doc)
@@ -181,12 +193,28 @@ impl SessionManager {
     ///
     /// Devuelve error si la colección no se puede leer.
     pub fn get_session_nodes(&self, session_id: &str) -> Result<Vec<Document>> {
-        // FIXME: dogma-vdb no tiene un método de consulta por metadatos
-        // aún. Esta es la firma preparada para cuando esté disponible.
-        // Por ahora devolvemos una lista vacía.
-        let _ = session_id;
-        warn!("get_session_nodes: metadata filtering not yet implemented in dogma-vdb");
-        Ok(Vec::new())
+        let all_docs: Vec<&Document> = self.collection.documents().collect();
+        info!(
+            "get_session_nodes: total docs={}, filtering by session_id={}",
+            all_docs.len(),
+            session_id
+        );
+
+        let mut nodes: Vec<Document> = all_docs
+            .into_iter()
+            .filter(|d| d.metadata_val("session_id") == Some(session_id))
+            .cloned()
+            .collect();
+
+        info!("get_session_nodes: {} nodes match session_id", nodes.len());
+
+        nodes.sort_by_key(|d| {
+            d.metadata_val("sequence")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        });
+
+        Ok(nodes)
     }
 
     /// Devuelve el número de nodos en una sesión.
@@ -197,7 +225,13 @@ impl SessionManager {
     /// Calcula el siguiente número de secuencia para una sesión.
     fn next_sequence(&self, session_id: &str) -> Result<u64> {
         let nodes = self.get_session_nodes(session_id)?;
-        Ok(nodes.len() as u64)
+        let max_seq = nodes
+            .iter()
+            .filter_map(|d| d.metadata_val("sequence"))
+            .filter_map(|s| s.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        Ok(max_seq + 1)
     }
 
     /// Devuelve una referencia a la colección subyacente.
@@ -299,7 +333,11 @@ impl SessionManager {
         Ok(results
             .into_iter()
             .map(|sd| {
-                let session_id = sd.document.metadata_val("session_id").unwrap_or("").to_string();
+                let session_id = sd
+                    .document
+                    .metadata_val("session_id")
+                    .unwrap_or("")
+                    .to_string();
                 let created_at = sd.document.metadata_val("created_at").map(String::from);
                 let parent_id = sd.document.metadata_val("parent_id").map(String::from);
                 super::compressor::SemanticMatch {
@@ -332,10 +370,7 @@ impl SessionManager {
         let pending: Vec<Document> = self
             .collection
             .documents()
-            .filter(|d| {
-                d.metadata_val("session_id") == Some(session_id)
-                    && !d.is_embedded()
-            })
+            .filter(|d| d.metadata_val("session_id") == Some(session_id) && !d.is_embedded())
             .cloned()
             .collect();
 
@@ -364,6 +399,133 @@ impl SessionManager {
         debug!("Embedded {} pending messages", embed_count);
         Ok(embed_count)
     }
+
+    // ── Plan persistence ────────────────────────────────────────────
+
+    /// Guarda un plan en dogma-vdb como nodos Plan y PlanStep.
+    ///
+    /// El plan se asocia a la sesión dada por `session_id`.
+    pub fn save_plan(&mut self, session_id: &str, plan: &crate::models::plan::Plan) -> Result<()> {
+        use crate::models::plan::StepStatus;
+
+        // Crear nodo Plan
+        let plan_doc = Document::builder(&plan.id, &plan.task)
+            .metadata("node_type", "Plan")
+            .metadata("session_id", session_id)
+            .metadata("task", &plan.task)
+            .metadata("created_at", &plan.created_at)
+            .build();
+
+        self.collection
+            .insert(plan_doc)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
+
+        // Crear nodos PlanStep
+        for step in &plan.steps {
+            let status_str = match step.status {
+                StepStatus::Pending => "pending",
+                StepStatus::InProgress => "in_progress",
+                StepStatus::Completed => "completed",
+                StepStatus::Failed => "failed",
+            };
+
+            let step_doc = Document::builder(&step.id, &step.description)
+                .metadata("node_type", "PlanStep")
+                .metadata("session_id", session_id)
+                .metadata("plan_id", &plan.id)
+                .metadata("step_number", step.step_number.to_string())
+                .metadata("status", status_str)
+                .metadata("sequence", step.step_number.to_string())
+                .metadata("edge_type", "NEXT")
+                .build();
+
+            self.collection
+                .insert(step_doc)
+                .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
+        }
+
+        debug!(
+            "Saved plan '{}' with {} steps to session {session_id}",
+            plan.id,
+            plan.steps.len()
+        );
+        Ok(())
+    }
+
+    /// Carga todos los planes de una sesión ordenados por fecha de creación.
+    pub fn get_plans(&self, session_id: &str) -> Result<Vec<crate::models::plan::Plan>> {
+        let all_docs: Vec<&Document> = self.collection.documents().collect();
+
+        // Cargar nodos Plan
+        let plan_nodes: Vec<&Document> = all_docs
+            .iter()
+            .filter(|d| {
+                d.metadata_val("node_type") == Some("Plan")
+                    && d.metadata_val("session_id") == Some(session_id)
+            })
+            .copied()
+            .collect();
+
+        let mut plans = Vec::new();
+        for plan_doc in plan_nodes {
+            let plan_id = plan_doc.id.clone();
+            let task = plan_doc
+                .metadata_val("task")
+                .unwrap_or(&plan_doc.text)
+                .to_string();
+            let created_at = plan_doc
+                .metadata_val("created_at")
+                .unwrap_or("")
+                .to_string();
+
+            // Cargar PlanStep hijos de este plan
+            let step_nodes: Vec<&Document> = all_docs
+                .iter()
+                .filter(|d| {
+                    d.metadata_val("node_type") == Some("PlanStep")
+                        && d.metadata_val("plan_id") == Some(&plan_id)
+                        && d.metadata_val("session_id") == Some(session_id)
+                })
+                .copied()
+                .collect();
+
+            let mut steps: Vec<crate::models::plan::PlanStep> = step_nodes
+                .iter()
+                .map(|sd| {
+                    let status_str = sd.metadata_val("status").unwrap_or("pending");
+                    let status = match status_str {
+                        "in_progress" => crate::models::plan::StepStatus::InProgress,
+                        "completed" => crate::models::plan::StepStatus::Completed,
+                        "failed" => crate::models::plan::StepStatus::Failed,
+                        _ => crate::models::plan::StepStatus::Pending,
+                    };
+                    crate::models::plan::PlanStep {
+                        id: sd.id.clone(),
+                        step_number: sd
+                            .metadata_val("step_number")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0),
+                        description: sd.text.clone(),
+                        status,
+                    }
+                })
+                .collect();
+
+            // Ordenar por step_number
+            steps.sort_by_key(|s| s.step_number);
+
+            plans.push(crate::models::plan::Plan {
+                id: plan_id,
+                task,
+                steps,
+                created_at,
+            });
+        }
+
+        plans.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        debug!("Loaded {} plans from session {session_id}", plans.len());
+        Ok(plans)
+    }
 }
 
 #[cfg(test)]
@@ -389,7 +551,7 @@ mod tests {
             .create_session("test-model")
             .expect("create session");
         let msg_id = manager
-            .append_message(&session_id, MessageRole::User, "hello")
+            .append_message(&session_id, MessageRole::User, "hello", &[])
             .expect("append message");
         assert!(msg_id.starts_with("msg-"));
     }

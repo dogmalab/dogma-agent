@@ -21,7 +21,7 @@ use dogma_v2_core::runtime::provider::{
     LLMProvider, LLMResponse, Message, ProviderConfig, TokenUsage, ToolCall,
 };
 use dogma_v2_core::state::session::SessionManager;
-use dogma_v2_core::tools::{create_survival_tools, InstallSkillTool};
+use dogma_v2_core::tools::{InstallSkillTool, create_survival_tools};
 
 // ── Mock LLM con fases: tool_call → auditoría → confirmación ──────
 
@@ -118,7 +118,7 @@ async fn test_e2e_install_skill_from_runtime_loop() {
         ..Default::default()
     };
 
-    let runtime = RuntimeLoop::new(provider.clone(), tools, session, loop_config);
+    let runtime = RuntimeLoop::new(provider.clone(), tools, session, loop_config, None);
 
     // Registrar InstallSkillTool (usa el mismo provider para auditoría)
     let skill_tool = InstallSkillTool::new(provider.clone(), dir.path().to_path_buf())
@@ -127,7 +127,10 @@ async fn test_e2e_install_skill_from_runtime_loop() {
 
     // Ejecutar el loop completo
     let response = runtime
-        .run("Necesito instalar el skill format_json desde skills.sh", &session_id)
+        .run(
+            "Necesito instalar el skill format_json desde skills.sh",
+            &session_id,
+        )
         .await
         .expect("RuntimeLoop should complete");
 

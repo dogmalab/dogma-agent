@@ -143,7 +143,10 @@ struct ScriptOutput {
 /// Ejecuta un módulo WASM dentro del sandbox virtualizado.
 ///
 /// El `code` debe ser base64-encoded WASM binary.
-async fn run_wasm_in_sandbox(code: &str, config: &crate::tools::security::SecurityConfig) -> Result<String, String> {
+async fn run_wasm_in_sandbox(
+    code: &str,
+    config: &crate::tools::security::SecurityConfig,
+) -> Result<String, String> {
     use base64::Engine;
 
     // Decodificar base64 → bytes WASM
@@ -167,8 +170,8 @@ async fn run_wasm_in_sandbox(code: &str, config: &crate::tools::security::Securi
     }
 
     // Compilar y ejecutar dentro de la micro-VM
-    let sandbox = WasmSandbox::new(&wasm_bytes)
-        .map_err(|e| format!("wasm: compilation failed: {e}"))?;
+    let sandbox =
+        WasmSandbox::new(&wasm_bytes).map_err(|e| format!("wasm: compilation failed: {e}"))?;
 
     debug!(
         "WASM sandbox: running module ({} bytes, fuel={})",
@@ -205,8 +208,7 @@ async fn run_wasm_in_sandbox(code: &str, config: &crate::tools::security::Securi
 
 /// Ejecuta un script usando el binario nativo del sistema.
 async fn run_script_native(lang: &str, code: &str) -> Result<String, String> {
-    let binary = resolve_binary(lang)
-        .ok_or_else(|| format!("unsupported language: {lang}"))?;
+    let binary = resolve_binary(lang).ok_or_else(|| format!("unsupported language: {lang}"))?;
 
     let output = tokio::time::timeout(
         Duration::from_secs(EXECUTION_TIMEOUT_SECS),
@@ -244,7 +246,10 @@ async fn run_script_native(lang: &str, code: &str) -> Result<String, String> {
 }
 
 /// Ejecución real del subproceso nativo.
-async fn run_script_native_inner(binary: &str, code: &str) -> std::result::Result<ScriptOutput, std::io::Error> {
+async fn run_script_native_inner(
+    binary: &str,
+    code: &str,
+) -> std::result::Result<ScriptOutput, std::io::Error> {
     let output = tokio::process::Command::new(binary)
         .arg("-c")
         .arg(code)
@@ -349,7 +354,10 @@ mod tests {
         let args = json!({"lang": "wasm", "code": "not-valid-base64!!!"});
         let result = tool.call(&args).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("base64"), "should mention base64 error");
+        assert!(
+            result.unwrap_err().contains("base64"),
+            "should mention base64 error"
+        );
     }
 
     #[tokio::test]

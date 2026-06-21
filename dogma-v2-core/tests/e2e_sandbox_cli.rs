@@ -27,26 +27,53 @@ fn set_sandbox_mode(mode: SandboxMode) {
 
 #[test]
 fn test_sandbox_mode_parse_disabled() {
-    assert_eq!("disabled".parse::<SandboxMode>().unwrap(), SandboxMode::Disabled);
+    assert_eq!(
+        "disabled".parse::<SandboxMode>().unwrap(),
+        SandboxMode::Disabled
+    );
     assert_eq!("off".parse::<SandboxMode>().unwrap(), SandboxMode::Disabled);
-    assert_eq!("none".parse::<SandboxMode>().unwrap(), SandboxMode::Disabled);
+    assert_eq!(
+        "none".parse::<SandboxMode>().unwrap(),
+        SandboxMode::Disabled
+    );
 }
 
 #[test]
 fn test_sandbox_mode_parse_enabled() {
-    assert_eq!("enabled".parse::<SandboxMode>().unwrap(), SandboxMode::Enabled);
+    assert_eq!(
+        "enabled".parse::<SandboxMode>().unwrap(),
+        SandboxMode::Enabled
+    );
     assert_eq!("on".parse::<SandboxMode>().unwrap(), SandboxMode::Enabled);
     assert_eq!("yes".parse::<SandboxMode>().unwrap(), SandboxMode::Enabled);
-    assert_eq!("sandbox".parse::<SandboxMode>().unwrap(), SandboxMode::Enabled);
+    assert_eq!(
+        "sandbox".parse::<SandboxMode>().unwrap(),
+        SandboxMode::Enabled
+    );
 }
 
 #[test]
 fn test_sandbox_mode_parse_wasm_only() {
-    assert_eq!("wasm-only".parse::<SandboxMode>().unwrap(), SandboxMode::WasmOnly);
-    assert_eq!("wasm_only".parse::<SandboxMode>().unwrap(), SandboxMode::WasmOnly);
-    assert_eq!("wasmonly".parse::<SandboxMode>().unwrap(), SandboxMode::WasmOnly);
-    assert_eq!("strict".parse::<SandboxMode>().unwrap(), SandboxMode::WasmOnly);
-    assert_eq!("WASM-ONLY".parse::<SandboxMode>().unwrap(), SandboxMode::WasmOnly);
+    assert_eq!(
+        "wasm-only".parse::<SandboxMode>().unwrap(),
+        SandboxMode::WasmOnly
+    );
+    assert_eq!(
+        "wasm_only".parse::<SandboxMode>().unwrap(),
+        SandboxMode::WasmOnly
+    );
+    assert_eq!(
+        "wasmonly".parse::<SandboxMode>().unwrap(),
+        SandboxMode::WasmOnly
+    );
+    assert_eq!(
+        "strict".parse::<SandboxMode>().unwrap(),
+        SandboxMode::WasmOnly
+    );
+    assert_eq!(
+        "WASM-ONLY".parse::<SandboxMode>().unwrap(),
+        SandboxMode::WasmOnly
+    );
 }
 
 #[test]
@@ -57,9 +84,14 @@ fn test_sandbox_mode_parse_invalid() {
 
 #[test]
 fn test_sandbox_mode_display_roundtrip() {
-    for mode in &[SandboxMode::Disabled, SandboxMode::Enabled, SandboxMode::WasmOnly] {
+    for mode in &[
+        SandboxMode::Disabled,
+        SandboxMode::Enabled,
+        SandboxMode::WasmOnly,
+    ] {
         let s = mode.to_string();
-        let parsed: SandboxMode = s.parse()
+        let parsed: SandboxMode = s
+            .parse()
             .unwrap_or_else(|e| panic!("round-trip failed for {mode:?} ('{s}'): {e}"));
         assert_eq!(*mode, parsed);
     }

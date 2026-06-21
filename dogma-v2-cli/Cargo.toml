@@ -6,6 +6,10 @@ license.workspace = true
 rust-version.workspace = true
 description = "Dogma 2.0 — Entrypoint de control por terminal (CLI)"
 
+[[bin]]
+name = "dogma"
+path = "src/main.rs"
+
 [dependencies]
 dogma-v2-common = { path = "../dogma-v2-common" }
 dogma-v2-core = { path = "../dogma-v2-core" }
@@ -29,6 +33,10 @@ tracing-subscriber.workspace = true
 
 # Utilities
 chrono.workspace = true
+
+# Terminal — UI
+crossterm = "0.28"
+ratatui = "0.29"
 
 [dev-dependencies]
 async-trait.workspace = true

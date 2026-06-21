@@ -10,12 +10,33 @@
 
 use std::sync::Arc;
 
-use crate::runtime::provider::{LLMProvider, LLMResponse, Message, MessageRole};
+use crate::models::events::AgentEvent;
+use crate::runtime::provider::{LLMProvider, LLMResponse, Message, MessageRole, TokenUsage};
 use crate::state::session::SessionManager;
 use crate::tools::{Tool, ToolRegistry};
 use dogma_v2_common::Result;
+use dogma_vdb::doc::Document;
 use parking_lot::RwLock;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
+
+/// Default system prompt injected at the start of every session.
+const DEFAULT_SYSTEM_PROMPT: &str = "\
+    You are Dogma, an AI coding assistant with persistent session memory \
+    and tool execution capabilities.\n\n\
+    MEMORY: Your full conversation history is preserved across turns. \
+    Use `search_memory` to find relevant context from any past \
+    conversation.\n\n\
+    TOOLS:\n\
+    - `read_file`, `write_file`, `execute_script` — basic file and code operations\n\
+    - `search_memory` — semantic search across all past conversations\n\
+    - `plan` — create structured plans for complex tasks (use FIRST for complex work)\n\
+    - `delegate_task` — spawn sub-agents for isolated execution (with optional skills)\n\
+    - `install_skill` — install dynamic capabilities from skills.sh\n\n\
+    WORKFLOW: For complex tasks, start by calling `plan` to create a structured \
+    breakdown, then execute each step using the appropriate tools. Use \
+    `delegate_task` for steps that need focused, independent sub-agents. \
+    Think step by step and use tools strategically.";
 
 /// Configuración del runtime loop.
 #[derive(Debug, Clone)]
@@ -24,13 +45,16 @@ pub struct LoopConfig {
     pub max_tool_iterations: u32,
     /// Habilitar compresión de contexto.
     pub context_compression: bool,
+    /// System prompt inyectado al inicio de cada sesión.
+    pub system_prompt: String,
 }
 
 impl Default for LoopConfig {
     fn default() -> Self {
         Self {
-            max_tool_iterations: 10,
+            max_tool_iterations: 25,
             context_compression: true,
+            system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
         }
     }
 }
@@ -42,6 +66,77 @@ struct LoopState {
     messages: Vec<Message>,
 }
 
+/// Convierte un `Document` de dogma-vdb a un `Message` del provider.
+///
+/// Solo convierte documentos con `node_type` igual a "Message".
+/// Los ToolResult se saltan porque DeepSeek requiere que los mensajes
+/// con `role: "tool"` estén precedidos por un assistant message con
+/// `tool_calls`, y no almacenamos los tool_calls en dogma-vdb.
+fn document_to_message(doc: &Document) -> Option<Message> {
+    let node_type = doc.metadata_val("node_type")?;
+
+    match node_type {
+        "Message" => {
+            let role_str = doc.metadata_val("role").unwrap_or("user");
+            let role = match role_str {
+                "system" => MessageRole::System,
+                "user" => MessageRole::User,
+                "assistant" => MessageRole::Assistant,
+                "tool" => MessageRole::Tool,
+                _ => MessageRole::User,
+            };
+            let mut msg = Message::new(role, doc.text.clone());
+
+            // Restaurar extra_fields si existen (ej: reasoning_content)
+            if let Some(extra_json) = doc.metadata_val("extra_fields") {
+                if let Ok(extra_fields) =
+                    serde_json::from_str::<Vec<(String, serde_json::Value)>>(extra_json)
+                {
+                    for (key, val) in extra_fields {
+                        msg = msg.with_extra_field(&key, val);
+                    }
+                }
+            }
+
+            Some(msg)
+        }
+        _ => None,
+    }
+}
+
+/// Carga el historial de una sesión desde dogma-vdb y lo convierte a `Vec<Message>`.
+///
+/// Los mensajes se devuelven ordenados por secuencia (cronológico).
+fn load_session_history(session: &SessionManager, session_id: &str) -> Vec<Message> {
+    match session.get_session_nodes(session_id) {
+        Ok(nodes) => {
+            info!(
+                "Loaded {} raw nodes from session {}",
+                nodes.len(),
+                session_id
+            );
+            for (i, node) in nodes.iter().enumerate() {
+                let node_type = node.metadata_val("node_type").unwrap_or("?");
+                let role = node.metadata_val("role").unwrap_or("?");
+                let seq = node.metadata_val("sequence").unwrap_or("?");
+                let text_preview: String = node.text.chars().take(50).collect();
+                info!("  node[{i}]: type={node_type} role={role} seq={seq} text={text_preview}...");
+            }
+            let messages: Vec<Message> = nodes.iter().filter_map(document_to_message).collect();
+            info!(
+                "Converted {} messages from session {}",
+                messages.len(),
+                session_id
+            );
+            messages
+        }
+        Err(e) => {
+            warn!("Failed to load session history: {e}");
+            Vec::new()
+        }
+    }
+}
+
 /// El orquestador principal del ciclo IA.
 pub struct RuntimeLoop {
     provider: Arc<dyn LLMProvider>,
@@ -49,15 +144,21 @@ pub struct RuntimeLoop {
     session: Arc<RwLock<SessionManager>>,
     config: LoopConfig,
     state: RwLock<LoopState>,
+    /// Canal opcional para emitir eventos de la UI reactiva.
+    event_tx: Option<mpsc::Sender<AgentEvent>>,
 }
 
 impl RuntimeLoop {
     /// Crea un nuevo RuntimeLoop.
+    ///
+    /// * `event_tx` — Canal opcional para emitir eventos de progreso
+    ///   hacia la interfaz (InlineUI). Pasar `None` si no se usa UI.
     pub fn new(
         provider: Arc<dyn LLMProvider>,
         tools: ToolRegistry,
         session: SessionManager,
         config: LoopConfig,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
     ) -> Self {
         Self {
             provider,
@@ -68,6 +169,7 @@ impl RuntimeLoop {
                 iteration: 0,
                 messages: Vec::new(),
             }),
+            event_tx,
         }
     }
 
@@ -80,26 +182,52 @@ impl RuntimeLoop {
     pub async fn run(&self, prompt: &str, session_id: &str) -> Result<String> {
         info!("Runtime loop starting for session {}", session_id);
 
-        // Reset state for this run
+        // Cargar historial de sesiones anteriores desde dogma-vdb
+        let history = {
+            let session = self.session.read();
+            load_session_history(&session, session_id)
+        };
+
+        // Construir contexto: system prompt + historial + prompt actual
         {
             let mut state = self.state.write();
             state.iteration = 0;
-            state.messages.clear();
+            state.messages = history;
+
+            // Siempre inyectar system prompt al inicio del contexto
+            state.messages.insert(
+                0,
+                Message::new(MessageRole::System, &self.config.system_prompt),
+            );
+
             state.messages.push(Message::new(MessageRole::User, prompt));
         }
+
+        debug!(
+            "Context loaded: {} previous messages + new prompt",
+            self.state.read().messages.len() - 1
+        );
 
         // Persist user message in session
         {
             let mut session = self.session.write();
-            session.append_message(session_id, MessageRole::User, prompt)?;
+            session.append_message(session_id, MessageRole::User, prompt, &[])?;
         }
 
         let result = self.tool_loop(session_id).await;
 
         // Persist final result
         if let Ok(ref final_content) = result {
+            let extra = {
+                let state = self.state.read();
+                state
+                    .messages
+                    .last()
+                    .map(|m| m.extra_fields.clone())
+                    .unwrap_or_default()
+            };
             let mut session = self.session.write();
-            session.append_message(session_id, MessageRole::Assistant, final_content)?;
+            session.append_message(session_id, MessageRole::Assistant, final_content, &extra)?;
         }
 
         result
@@ -125,6 +253,20 @@ impl RuntimeLoop {
                 self.maybe_compress_context().await;
             }
 
+            // Emitir evento de status (si hay UI conectada)
+            if let Some(ref tx) = self.event_tx {
+                let (msg_count, iteration) = {
+                    let state = self.state.read();
+                    (state.messages.len(), state.iteration)
+                };
+                let pct = if self.config.max_tool_iterations > 0 {
+                    (iteration as f32 / self.config.max_tool_iterations as f32) * 100.0
+                } else {
+                    0.0
+                };
+                let _ = tx.try_send(AgentEvent::status(pct, msg_count as u64, String::new()));
+            }
+
             // Call LLM
             let messages = {
                 let state = self.state.read();
@@ -143,19 +285,92 @@ impl RuntimeLoop {
                 tool_specs.len()
             );
 
-            let response: LLMResponse =
-                self.provider
-                    .chat(&messages, &tool_specs)
-                    .await
-                    .map_err(|e| {
-                        error!("LLM provider error: {e}");
-                        e
-                    })?;
+            // Use streaming to emit chunks in real-time
+            let mut stream_rx = self
+                .provider
+                .chat_stream(&messages, &tool_specs)
+                .await
+                .map_err(|e| {
+                    error!("LLM provider error: {e}");
+                    e
+                })?;
+
+            let mut content = String::new();
+            let mut reasoning = String::new();
+            let mut tool_calls = Vec::new();
+            let mut usage = TokenUsage::default();
+            let mut extra_fields = Vec::new();
+
+            while let Some(chunk_result) = stream_rx.recv().await {
+                match chunk_result {
+                    Ok(super::provider::StreamChunk::ReasoningDelta(delta)) => {
+                        reasoning.push_str(&delta);
+                        if let Some(ref tx) = self.event_tx {
+                            let _ = tx.try_send(AgentEvent::thinking_chunk(delta));
+                        }
+                    }
+                    Ok(super::provider::StreamChunk::ContentDelta(delta)) => {
+                        content.push_str(&delta);
+                        if let Some(ref tx) = self.event_tx {
+                            let _ = tx.try_send(AgentEvent::content_chunk(delta));
+                        }
+                    }
+                    Ok(super::provider::StreamChunk::ToolCallDelta {
+                        index,
+                        id,
+                        name,
+                        arguments_delta,
+                    }) => {
+                        // Accumulate tool call deltas
+                        while tool_calls.len() <= index {
+                            tool_calls.push(super::provider::ToolCall {
+                                id: String::new(),
+                                name: String::new(),
+                                arguments: String::new(),
+                            });
+                        }
+                        if let Some(id) = id {
+                            tool_calls[index].id = id;
+                        }
+                        if let Some(name) = name {
+                            tool_calls[index].name = name;
+                        }
+                        tool_calls[index].arguments.push_str(&arguments_delta);
+                    }
+                    Ok(super::provider::StreamChunk::Done(u)) => {
+                        usage = u;
+                    }
+                    Err(e) => {
+                        error!("LLM stream error: {e}");
+                        return Err(e);
+                    }
+                }
+            }
+
+            // Store reasoning_content in extra_fields for round-trip
+            if !reasoning.is_empty() {
+                extra_fields.push((
+                    "reasoning_content".to_string(),
+                    serde_json::Value::String(reasoning),
+                ));
+            }
+
+            let response = LLMResponse {
+                content,
+                tool_calls,
+                usage,
+                extra_fields,
+            };
 
             // Persist assistant response
             {
                 let mut session = self.session.write();
-                session.append_message(session_id, MessageRole::Assistant, &response.content)?;
+                session.append_message(
+                    session_id,
+                    MessageRole::Assistant,
+                    &response.content,
+                    &response.extra_fields,
+                )?;
             }
 
             // If no tool calls, we're done
@@ -264,6 +479,12 @@ impl RuntimeLoop {
     pub fn tool_registry(&self) -> Arc<RwLock<ToolRegistry>> {
         Arc::clone(&self.tools)
     }
+
+    /// Devuelve el canal de eventos opcional para la UI reactiva.
+    #[must_use]
+    pub fn event_tx(&self) -> Option<mpsc::Sender<AgentEvent>> {
+        self.event_tx.clone()
+    }
 }
 
 #[cfg(test)]
@@ -274,7 +495,7 @@ mod tests {
     fn test_runtime_loop_creation() {
         // Solo verifica que el runtime se puede crear con config por defecto
         let config = LoopConfig::default();
-        assert_eq!(config.max_tool_iterations, 10);
+        assert_eq!(config.max_tool_iterations, 25);
         assert!(config.context_compression);
     }
 }

@@ -1,4 +1,4 @@
-//! # Config — Carga de configuración del proveedor LLM
+//! # Config — Carga de configuración del agente
 //!
 //! Busca la configuración en este orden de precedencia:
 //!
@@ -9,21 +9,42 @@
 //!
 //! ```toml
 //! [provider]
-//! name = "big-pickle"
-//! base_url = "https://opencode.ai/zen/v1"
-//! model = "@ai-sdk/openai-compatible"
+//! name = "deepseek-v4-flash"
+//! base_url = "https://opencode.ai/zen/go/v1"
+//! model = "deepseek-v4-flash"
 //! api_key = "sk-..."
+//!
+//! [runtime]
+//! max_tool_iterations = 50
 //! ```
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use dogma_v2_core::runtime::provider::ProviderConfig;
 use serde::Deserialize;
+
+/// Configuración completa del agente (provider + runtime).
+#[derive(Debug, Clone)]
+pub struct DogmaConfig {
+    pub provider: ProviderConfig,
+    pub max_tool_iterations: u32,
+}
+
+impl Default for DogmaConfig {
+    fn default() -> Self {
+        Self {
+            provider: ProviderConfig::default(),
+            max_tool_iterations: 50,
+        }
+    }
+}
 
 /// Estructura que refleja el archivo keys.toml.
 #[derive(Debug, Deserialize)]
 struct KeysToml {
     provider: ProviderSection,
+    #[serde(default)]
+    runtime: RuntimeSection,
 }
 
 /// Sección `[provider]` del keys.toml.
@@ -36,51 +57,66 @@ struct ProviderSection {
     api_key: String,
 }
 
-/// Carga la configuración del proveedor LLM.
+/// Sección `[runtime]` del keys.toml (opcional).
+#[derive(Debug, Deserialize, Default)]
+struct RuntimeSection {
+    max_tool_iterations: Option<u32>,
+}
+
+/// Obtiene el directorio home del usuario.
+/// En tests, se puede override con `DOGMA_HOME`.
+fn dirs() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Ok(custom) = std::env::var("DOGMA_HOME") {
+        return Some(PathBuf::from(custom));
+    }
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok()
+        .map(PathBuf::from)
+}
+
+/// Carga la configuración completa del agente.
 ///
 /// Orden de precedencia:
 /// 1. `keys.toml` en la ruta indicada (o `./keys.toml` por defecto).
 /// 2. Variables de entorno: `DOGMA_BASE_URL`, `DOGMA_MODEL`, `DOGMA_API_KEY`.
 ///
-/// # Errors
-///
-/// Devuelve un mensaje descriptivo si no se encuentra configuración en
-/// ninguna fuente, o si la encontrada está incompleta.
-pub fn load_provider_config(keys_path: Option<&Path>) -> Result<ProviderConfig, String> {
-    // ── Intento 1: keys.toml ─────────────────────────────────────────
+/// La sección `[runtime]` es opcional — si no está, se usan defaults.
+pub fn load_config(keys_path: Option<&Path>) -> Result<DogmaConfig, String> {
+    // ── Intento 1: keys.toml (ruta explícita o directorio actual) ───
     let path = keys_path.unwrap_or_else(|| Path::new("keys.toml"));
     if path.exists() {
-        match std::fs::read_to_string(path) {
-            Ok(content) => match toml::from_str::<KeysToml>(&content) {
-                Ok(toml_config) => {
-                    return Ok(ProviderConfig {
-                        base_url: toml_config.provider.base_url,
-                        model: toml_config.provider.model,
-                        api_key: Some(toml_config.provider.api_key),
-                        ..Default::default()
-                    });
-                }
-                Err(e) => {
-                    tracing::warn!("config: failed to parse {}: {e}", path.display());
-                }
-            },
-            Err(e) => {
-                tracing::warn!("config: failed to read {}: {e}", path.display());
-            }
+        if let Some(config) = load_from_toml_file(path) {
+            return Ok(config);
         }
     }
 
-    // ── Intento 2: variables de entorno ──────────────────────────────
+    // ── Intento 2: ~/.dogma/keys.toml ───────────────────────────────
+    let home_keys = dirs()
+        .map(|h| h.join(".dogma").join("keys.toml"))
+        .filter(|p| p.exists());
+
+    if let Some(home_path) = home_keys {
+        if let Some(config) = load_from_toml_file(&home_path) {
+            return Ok(config);
+        }
+    }
+
+    // ── Intento 3: variables de entorno ──────────────────────────────
     let base_url = std::env::var("DOGMA_BASE_URL").ok();
     let model = std::env::var("DOGMA_MODEL").ok();
     let api_key = std::env::var("DOGMA_API_KEY").ok();
 
     if let (Some(url), Some(mdl), Some(key)) = (&base_url, &model, &api_key) {
-        return Ok(ProviderConfig {
-            base_url: url.clone(),
-            model: mdl.clone(),
-            api_key: Some(key.clone()),
-            ..Default::default()
+        return Ok(DogmaConfig {
+            provider: ProviderConfig {
+                base_url: url.clone(),
+                model: mdl.clone(),
+                api_key: Some(key.clone()),
+                ..Default::default()
+            },
+            max_tool_iterations: 50,
         });
     }
 
@@ -106,8 +142,25 @@ pub fn load_provider_config(keys_path: Option<&Path>) -> Result<ProviderConfig, 
     Err("No provider configuration found.\n\
          Create a keys.toml file with:\n\
          \n  [provider]\n  base_url = \"...\"\n  model = \"...\"\n  api_key = \"...\"\n\
+         \n  [runtime]\n  max_tool_iterations = 50\n\
          \nOr set environment variables:\n  DOGMA_BASE_URL\n  DOGMA_MODEL\n  DOGMA_API_KEY"
         .to_string())
+}
+
+/// Intenta cargar config desde un archivo TOML.
+fn load_from_toml_file(path: &Path) -> Option<DogmaConfig> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let toml_config: KeysToml = toml::from_str(&content).ok()?;
+
+    Some(DogmaConfig {
+        provider: ProviderConfig {
+            base_url: toml_config.provider.base_url,
+            model: toml_config.provider.model,
+            api_key: Some(toml_config.provider.api_key),
+            ..Default::default()
+        },
+        max_tool_iterations: toml_config.runtime.max_tool_iterations.unwrap_or(50),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -122,13 +175,11 @@ mod tests {
     use std::sync::Mutex;
 
     /// Mutex global para serializar tests que modifican env vars.
-    /// Previene race conditions entre tests paralelos de cargo test.
     static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     fn with_env_vars<R>(kvs: &[(&str, &str)], f: impl FnOnce() -> R) -> R {
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Salvar TODAS las DOGMA_* del entorno real
         let all_keys: Vec<String> = std::env::vars()
             .filter(|(k, _)| k.starts_with("DOGMA_"))
             .map(|(k, _)| k)
@@ -138,14 +189,12 @@ mod tests {
             .map(|k| (k.clone(), std::env::var(k).ok()))
             .collect();
 
-        // Remover todas las DOGMA_* del entorno
         for (k, _) in &saved {
             unsafe {
                 std::env::remove_var(k);
             }
         }
 
-        // Aplicar solo los valores del test
         for &(k, v) in kvs {
             unsafe {
                 std::env::set_var(k, v);
@@ -154,11 +203,10 @@ mod tests {
 
         let result = f();
 
-        // Restaurar valores originales
         for (k, original) in &saved {
             match original {
                 Some(val) => unsafe {
-                    std::env::set_var(k, val);
+                    std::env::set_var(k, &val);
                 },
                 None => unsafe {
                     std::env::remove_var(k);
@@ -185,14 +233,32 @@ name = "big-pickle"
 base_url = "https://opencode.ai/zen/v1"
 model = "@ai-sdk/openai-compatible"
 api_key = "sk-test-key-for-toml"
+
+[runtime]
+max_tool_iterations = 30
 "#;
         let path = write_keys_toml(&dir, content);
 
-        let config = load_provider_config(Some(&path)).expect("load from toml");
-        assert_eq!(config.base_url, "https://opencode.ai/zen/v1");
-        assert_eq!(config.model, "@ai-sdk/openai-compatible");
-        assert_eq!(config.api_key, Some("sk-test-key-for-toml".into()));
-        assert!((config.temperature - 0.7).abs() < f32::EPSILON);
+        let config = load_config(Some(&path)).expect("load from toml");
+        assert_eq!(config.provider.base_url, "https://opencode.ai/zen/v1");
+        assert_eq!(config.provider.model, "@ai-sdk/openai-compatible");
+        assert_eq!(config.provider.api_key, Some("sk-test-key-for-toml".into()));
+        assert_eq!(config.max_tool_iterations, 30);
+    }
+
+    #[test]
+    fn test_load_from_toml_without_runtime() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let content = r#"
+[provider]
+base_url = "https://test.test/v1"
+model = "test-model"
+api_key = "sk-test"
+"#;
+        let path = write_keys_toml(&dir, content);
+
+        let config = load_config(Some(&path)).expect("load from toml");
+        assert_eq!(config.max_tool_iterations, 50); // default
     }
 
     #[test]
@@ -205,30 +271,29 @@ api_key = "sk-test-key-for-toml"
                 ("DOGMA_BASE_URL", "https://env-test.test/v1"),
                 ("DOGMA_MODEL", "env-model"),
                 ("DOGMA_API_KEY", "sk-env-key"),
+                ("DOGMA_HOME", dir.path().to_str().unwrap()),
             ],
-            || load_provider_config(Some(&nonexistent)),
+            || load_config(Some(&nonexistent)),
         );
 
         let config = result.expect("load from env");
-        assert_eq!(config.base_url, "https://env-test.test/v1");
-        assert_eq!(config.model, "env-model");
-        assert_eq!(config.api_key, Some("sk-env-key".into()));
+        assert_eq!(config.provider.base_url, "https://env-test.test/v1");
+        assert_eq!(config.provider.model, "env-model");
+        assert_eq!(config.provider.api_key, Some("sk-env-key".into()));
+        assert_eq!(config.max_tool_iterations, 50); // default
     }
 
     #[test]
     fn test_load_fails_when_none_found() {
-        // Este test debe ejecutarse sin vars DOGMA_* en el entorno.
-        let _guard = ENV_LOCK.lock().expect("env lock");
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = tempfile::TempDir::new().expect("temp dir");
         let nonexistent = dir.path().join("no-file-here.toml");
 
-        // Si el entorno exterior tiene DOGMA_* (de otro test en
-        // paralelo), las limpiamos temporalmente
         let old_base = std::env::var("DOGMA_BASE_URL").ok();
         let old_model = std::env::var("DOGMA_MODEL").ok();
         let old_key = std::env::var("DOGMA_API_KEY").ok();
+        let old_home = std::env::var("DOGMA_HOME").ok();
 
-        // Limpiar (con unsafe en edition 2024)
         if old_base.is_some() {
             unsafe {
                 std::env::remove_var("DOGMA_BASE_URL");
@@ -244,10 +309,12 @@ api_key = "sk-test-key-for-toml"
                 std::env::remove_var("DOGMA_API_KEY");
             }
         }
+        unsafe {
+            std::env::set_var("DOGMA_HOME", dir.path());
+        }
 
-        let err = load_provider_config(Some(&nonexistent)).expect_err("should fail");
+        let err = load_config(Some(&nonexistent)).expect_err("should fail");
 
-        // Restaurar
         if let Some(v) = old_base {
             unsafe {
                 std::env::set_var("DOGMA_BASE_URL", &v);
@@ -263,6 +330,14 @@ api_key = "sk-test-key-for-toml"
                 std::env::set_var("DOGMA_API_KEY", &v);
             }
         }
+        match old_home {
+            Some(v) => unsafe {
+                std::env::set_var("DOGMA_HOME", &v);
+            },
+            None => unsafe {
+                std::env::remove_var("DOGMA_HOME");
+            },
+        }
 
         assert!(err.contains("No provider configuration found"));
     }
@@ -272,9 +347,13 @@ api_key = "sk-test-key-for-toml"
         let dir = tempfile::TempDir::new().expect("temp dir");
         let nonexistent = dir.path().join("nonexistent.toml");
 
-        let result = with_env_vars(&[("DOGMA_BASE_URL", "https://partial.test/v1")], || {
-            load_provider_config(Some(&nonexistent))
-        });
+        let result = with_env_vars(
+            &[
+                ("DOGMA_BASE_URL", "https://partial.test/v1"),
+                ("DOGMA_HOME", dir.path().to_str().unwrap()),
+            ],
+            || load_config(Some(&nonexistent)),
+        );
 
         let err = result.expect_err("should fail with partial env");
         assert!(err.contains("Missing"));
@@ -290,6 +369,9 @@ api_key = "sk-test-key-for-toml"
 base_url = "https://toml-wins.test/v1"
 model = "toml-model"
 api_key = "sk-toml-key"
+
+[runtime]
+max_tool_iterations = 42
 "#;
         let path = write_keys_toml(&dir, content);
 
@@ -298,13 +380,15 @@ api_key = "sk-toml-key"
                 ("DOGMA_BASE_URL", "https://env-wrong.test/v1"),
                 ("DOGMA_MODEL", "env-model"),
                 ("DOGMA_API_KEY", "sk-env-key"),
+                ("DOGMA_HOME", dir.path().to_str().unwrap()),
             ],
-            || load_provider_config(Some(&path)),
+            || load_config(Some(&path)),
         );
 
         let config = config.expect("load from toml");
-        assert_eq!(config.base_url, "https://toml-wins.test/v1");
-        assert_eq!(config.model, "toml-model");
-        assert_eq!(config.api_key, Some("sk-toml-key".into()));
+        assert_eq!(config.provider.base_url, "https://toml-wins.test/v1");
+        assert_eq!(config.provider.model, "toml-model");
+        assert_eq!(config.provider.api_key, Some("sk-toml-key".into()));
+        assert_eq!(config.max_tool_iterations, 42);
     }
 }

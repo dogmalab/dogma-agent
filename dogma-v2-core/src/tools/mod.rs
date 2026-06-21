@@ -1,4 +1,4 @@
-//! # Tools — Herramientas de supervivencia + búsqueda semántica
+//! # Tools — Herramientas de supervivencia + búsqueda semántica + planificación
 //!
 //! Este módulo registra las herramientas del agente:
 //!
@@ -6,9 +6,11 @@
 //! 2. `write_file(path, content)` — Escribe contenido en un archivo.
 //! 3. `execute_script(lang, code)` — Ejecuta scripts ligeros.
 //! 4. `search_memory(query, ...)` — Búsqueda semántica en la memoria del agente.
+//! 5. `plan(task, steps)` — Crea planes estructurados para tareas complejas.
 
 mod delegate_task;
 mod execute_script;
+mod plan;
 mod read_file;
 mod search_memory;
 mod security;
@@ -22,11 +24,10 @@ use tracing::debug;
 
 pub use delegate_task::DelegateTaskTool;
 pub use execute_script::ExecuteScriptTool;
+pub use plan::PlanTool;
 pub use read_file::ReadFileTool;
 pub use search_memory::SearchMemoryTool;
-pub use security::{
-    CommandVerdict, SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail,
-};
+pub use security::{CommandVerdict, SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail};
 pub use skills_sh::{CognitiveAuditReport, InstallSkillTool, SkillsShClient};
 pub use write_file::WriteFileTool;
 

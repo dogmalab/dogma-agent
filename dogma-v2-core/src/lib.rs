@@ -14,6 +14,8 @@ pub mod runtime;
 pub mod state;
 pub mod tools;
 
+pub use models::memory::EnvironmentMemory;
+pub use models::plan::Plan;
 pub use runtime::loop_handle::RuntimeLoop;
 pub use runtime::provider::LLMProvider;
 pub use runtime::sub_agent::SubAgentManager;

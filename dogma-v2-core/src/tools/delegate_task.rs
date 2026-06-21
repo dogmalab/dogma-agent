@@ -95,6 +95,15 @@ impl Tool for DelegateTaskTool {
                     },
                     "description": "Optional filter of tool groups. \
                                     Example: ['file', 'terminal']"
+                },
+                "skills": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "Optional skills to install in the sub-agent's \
+                                    context. Each string is a skill_id from skills.sh. \
+                                    Example: ['format-json', 'search-code']"
                 }
             }
         })
@@ -102,10 +111,8 @@ impl Tool for DelegateTaskTool {
 
     async fn call(&self, args: &serde_json::Value) -> ToolResult {
         // ── 1. Deserializar ────────────────────────────────────────
-        let delegate_args: DelegateTaskArgs =
-            serde_json::from_value(args.clone()).map_err(|e| {
-                format!("Invalid delegate_task arguments: {e}")
-            })?;
+        let delegate_args: DelegateTaskArgs = serde_json::from_value(args.clone())
+            .map_err(|e| format!("Invalid delegate_task arguments: {e}"))?;
 
         // ── 2. Validar ─────────────────────────────────────────────
         if delegate_args.task_objective.trim().is_empty() {
@@ -133,10 +140,10 @@ impl Tool for DelegateTaskTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::delegation::SubAgentConfig;
     use crate::runtime::loop_handle::{LoopConfig, RuntimeLoop};
     use crate::runtime::provider::LLMProvider;
     use crate::runtime::provider::{LLMResponse, Message};
-    use crate::models::delegation::SubAgentConfig;
     use crate::state::session::SessionManager;
     use crate::tools::create_survival_tools;
     use tempfile::tempdir;
@@ -187,11 +194,8 @@ mod tests {
         let dir = tempdir().expect("temp dir");
         let session = SessionManager::open(dir.path()).expect("session");
 
-        let runtime = Arc::new(RuntimeLoop::new(provider, tools, session, config));
-        let manager = Arc::new(SubAgentManager::new(
-            runtime,
-            SubAgentConfig::default(),
-        ));
+        let runtime = Arc::new(RuntimeLoop::new(provider, tools, session, config, None));
+        let manager = Arc::new(SubAgentManager::new(runtime, SubAgentConfig::default()));
         DelegateTaskTool::new(manager)
     }
 
@@ -214,17 +218,17 @@ mod tests {
         assert_eq!(params["type"], "object");
 
         let props = params["properties"].as_object().expect("properties");
-        assert!(props.contains_key("task_objective"), "missing task_objective");
+        assert!(
+            props.contains_key("task_objective"),
+            "missing task_objective"
+        );
         assert!(props.contains_key("context"), "missing context");
         assert!(props.contains_key("role"), "missing role");
         assert!(props.contains_key("toolsets"), "missing toolsets");
 
         // Required fields
         let required = params["required"].as_array().expect("required");
-        let required_names: Vec<&str> = required
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(required_names.contains(&"task_objective"));
         assert!(required_names.contains(&"context"));
     }
