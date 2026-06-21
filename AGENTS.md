@@ -13,16 +13,16 @@ El agente Dogma 2.0 es una reescritura total desde cero. Abandonamos todas las d
 
 ---
 
-## ✅ ESTADO ACTUAL (2026-05-25)
+## ✅ ESTADO ACTUAL (2026-06-20)
 
 ### Estructura del Workspace — COMPILA (0 warnings, 0 errors)
 
 | Crate | Archivos | LOC | Tests | Estado |
 |-------|----------|-----|-------|--------|
-| `dogma-v2-common` | 3 .rs | ~270 | 3 | Completo (error enum, NDJSON events) |
-| `dogma-v2-core` | 9 .rs | ~1,800 | 10 | Completo (runtime, tools, state, compressor) |
-| `dogma-v2-cli` | 1 .rs | ~265 | - | Completo (clap CLI, --json flag) |
-| **Total** | **13 .rs** | **~2,335** | **13** | **Compila 0/0** |
+| `dogma-v2-common` | 3 .rs | ~320 | 3 | Completo (error enum, NDJSON events) |
+| `dogma-v2-core` | 12 .rs | ~2,800 | 15 | Completo (runtime, tools, state, compressor, context_manager, web tools) |
+| `dogma-v2-cli` | 4 .rs | ~2,100 | 6 | Completo (clap CLI, ratatui TUI, config) |
+| **Total** | **19 .rs** | **~5,220** | **24** | **Compila 0/0** |
 
 ### Diagrama de Capas
 

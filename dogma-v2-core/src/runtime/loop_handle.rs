@@ -47,6 +47,14 @@ pub struct LoopConfig {
     pub context_compression: bool,
     /// System prompt inyectado al inicio de cada sesión.
     pub system_prompt: String,
+    /// Habilitar context management semántico (búsqueda en dogma-vdb).
+    pub context_management: bool,
+    /// Número de turnos recientes que siempre se mantienen.
+    pub context_recent_turns: usize,
+    /// Número máximo de mensajes relevantes a inyectar.
+    pub context_max_relevant: usize,
+    /// Umbral de similitud para considerar relevante (0.0–1.0).
+    pub context_relevance_threshold: f32,
 }
 
 impl Default for LoopConfig {
@@ -55,6 +63,10 @@ impl Default for LoopConfig {
             max_tool_iterations: 25,
             context_compression: true,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
+            context_management: false,
+            context_recent_turns: 5,
+            context_max_relevant: 5,
+            context_relevance_threshold: 0.3,
         }
     }
 }
@@ -193,6 +205,53 @@ impl RuntimeLoop {
             let mut state = self.state.write();
             state.iteration = 0;
             state.messages = history;
+
+            // Si context management está habilitado, buscar contexto relevante
+            if self.config.context_management && state.messages.len() > 1 {
+                let recent = state.messages.len().min(self.config.context_recent_turns * 2);
+                let recent_msgs = state.messages[state.messages.len() - recent..].to_vec();
+
+                let cm = crate::state::context_manager::ContextManager::new(
+                    crate::state::context_manager::ContextConfig {
+                        recent_turns: self.config.context_recent_turns,
+                        max_relevant: self.config.context_max_relevant,
+                        relevance_threshold: self.config.context_relevance_threshold,
+                    },
+                );
+
+                if cm.should_optimize(state.messages.len()) {
+                    let session = self.session.read();
+                    let search_fn = |embedding: &[f32], k: usize| {
+                        session.search_similar_global_raw(embedding, k)
+                    };
+
+                    // Usar un embedder dummy si no hay embedder configurado
+                    // En producción, el embedder se inyectará desde el CLI
+                    if let Ok(relevant) = cm.build_context(
+                        &recent_msgs,
+                        session_id,
+                        prompt,
+                        &crate::state::session::NullEmbedder,
+                        search_fn,
+                    ) {
+                        if !relevant.is_empty() {
+                            let ctx_text = crate::state::context_manager::ContextManager::format_relevant_context(&relevant);
+                            debug!(
+                                "Injecting {} relevant messages into context",
+                                relevant.len()
+                            );
+                            // Inyectar como mensaje de sistema adicional
+                            state.messages.insert(
+                                1,
+                                crate::runtime::provider::Message::new(
+                                    crate::runtime::provider::MessageRole::System,
+                                    &ctx_text,
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
 
             // Siempre inyectar system prompt al inicio del contexto
             state.messages.insert(

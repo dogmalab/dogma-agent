@@ -526,6 +526,68 @@ impl SessionManager {
         debug!("Loaded {} plans from session {session_id}", plans.len());
         Ok(plans)
     }
+
+    /// Búsqueda semántica global con embedding ya computado.
+    ///
+    /// A diferencia de `search_similar_global`, este método acepta
+    /// un embedding pre-computado (no necesita embedder).
+    /// Usado por el context manager que ya embebió el query.
+    pub fn search_similar_global_raw(
+        &self,
+        embedding: &[f32],
+        k: usize,
+    ) -> Vec<super::compressor::SemanticMatch> {
+        if embedding.is_empty() {
+            return Vec::new();
+        }
+
+        let results = self
+            .collection
+            .search_filtered(embedding, k, &|doc: &Document| -> bool {
+                matches!(
+                    doc.metadata_val("node_type"),
+                    Some("Message") | Some("ToolResult") | Some("Chunk")
+                )
+            });
+
+        results
+            .into_iter()
+            .map(|sd| {
+                let session_id = sd
+                    .document
+                    .metadata_val("session_id")
+                    .unwrap_or("")
+                    .to_string();
+                let created_at = sd.document.metadata_val("created_at").map(String::from);
+                let parent_id = sd.document.metadata_val("parent_id").map(String::from);
+                super::compressor::SemanticMatch {
+                    node_id: sd.document.id,
+                    content: sd.document.text,
+                    score: sd.score,
+                    session_id,
+                    created_at,
+                    parent_id,
+                }
+            })
+            .collect()
+    }
+}
+
+/// Embedder nulo — retorna embedding vacío.
+///
+/// Usado por el context manager cuando no hay embedder configurado.
+/// Permite que el context manager funcione (sin búsqueda semántica)
+/// sin romper la interfaz.
+pub struct NullEmbedder;
+
+impl dogma_vdb::embedding::Embedder for NullEmbedder {
+    fn embed(&self, _text: &str) -> std::result::Result<Vec<f32>, dogma_vdb::error::Error> {
+        Ok(Vec::new())
+    }
+
+    fn dimension(&self) -> usize {
+        0
+    }
 }
 
 #[cfg(test)]

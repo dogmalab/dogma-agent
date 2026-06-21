@@ -15,6 +15,8 @@ mod read_file;
 mod search_memory;
 mod security;
 mod skills_sh;
+mod web_extract;
+mod web_search;
 mod write_file;
 
 use async_trait::async_trait;
@@ -29,6 +31,8 @@ pub use read_file::ReadFileTool;
 pub use search_memory::SearchMemoryTool;
 pub use security::{CommandVerdict, SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail};
 pub use skills_sh::{CognitiveAuditReport, InstallSkillTool, SkillsShClient};
+pub use web_extract::WebExtractTool;
+pub use web_search::WebSearchTool;
 pub use write_file::WriteFileTool;
 
 /// Resultado de la ejecución de una herramienta.
@@ -138,6 +142,21 @@ pub fn create_survival_tools() -> ToolRegistry {
     registry.register(Box::new(ReadFileTool));
     registry.register(Box::new(WriteFileTool));
     registry.register(Box::new(ExecuteScriptTool));
+    registry
+}
+
+/// Crea herramientas web si la API key está configurada.
+///
+/// Lee `EXA_API_KEY` del environment. Si no está presente,
+/// retorna un registry vacío.
+pub fn create_web_tools() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    if let Ok(api_key) = std::env::var("EXA_API_KEY") {
+        if !api_key.is_empty() {
+            registry.register(Box::new(WebSearchTool::new(api_key.clone())));
+            registry.register(Box::new(WebExtractTool::new(api_key)));
+        }
+    }
     registry
 }
 

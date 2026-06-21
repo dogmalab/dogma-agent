@@ -21,4 +21,5 @@
 //!   para re-inyectar contexto antiguo relevante bajo demanda.
 
 pub mod compressor;
+pub mod context_manager;
 pub mod session;
