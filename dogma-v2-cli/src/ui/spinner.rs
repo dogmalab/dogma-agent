@@ -10,8 +10,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-/// Frames de animación — caracteres ASCII seguros.
-const FRAMES: [&str; 4] = ["○", "◎", "●", "◎"];
+/// Frames de animación — ASCII puro, funciona en cualquier terminal.
+const FRAMES: [&str; 4] = ["o", "O", "0", "O"];
 
 /// Indicador animado que muestra una rune rotativa.
 pub struct Spinner {

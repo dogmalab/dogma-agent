@@ -95,18 +95,13 @@ fn handle_escape(
         let b = byte[0];
         // Terminadores CSI: letra mayúscula (A-Z) o tilde (~)
         if b.is_ascii_uppercase() || b == b'~' {
-            if b == b'~' {
-                // La secuencia completa es ESC [ <param_buf> ~
-                // El último byte del param_buf es el número real
-                if param_buf.last().is_some() {
-                    param_buf.push(b);
-                    resolve_csi(&param_buf, tx);
-                    return;
-                }
-            }
-            // Letra mayúscula: ESC [ <param_buf> <letter>
             param_buf.push(b);
             resolve_csi(&param_buf, tx);
+            return;
+        }
+        // Si el byte es menor que 0x20 (control char) o mayor que 0x7E (~),
+        // probablemente no es parte de la secuencia — ignorar
+        if b < 0x20 || b > 0x7E {
             return;
         }
         param_buf.push(b);
@@ -128,15 +123,25 @@ fn resolve_csi(param_buf: &[u8], tx: &mpsc::UnboundedSender<InputEvent>) {
         Some(b'F') => make_key(KeyCode::End, KeyModifiers::NONE),
         Some(b'Z') => make_key(KeyCode::BackTab, KeyModifiers::SHIFT),
         Some(b'~') => {
-            // ESC [ N ~ — PageUp (5), PageDown (6), Home (1), End (4)
+            // ESC [ N ~ — soporta 1-2 dígitos
             let param_str = std::str::from_utf8(&param_buf[..param_buf.len() - 1]).unwrap_or("");
             match param_str {
-                "5" => make_key(KeyCode::PageUp, KeyModifiers::NONE),
-                "6" => make_key(KeyCode::PageDown, KeyModifiers::NONE),
-                "1" | "7" => make_key(KeyCode::Home, KeyModifiers::NONE),
-                "4" | "8" => make_key(KeyCode::End, KeyModifiers::NONE),
-                "3" => make_key(KeyCode::Delete, KeyModifiers::NONE),
-                "2" => make_key(KeyCode::Insert, KeyModifiers::NONE),
+                // PageUp: 5, 15, 25
+                s if s.ends_with('5') => make_key(KeyCode::PageUp, KeyModifiers::NONE),
+                // PageDown: 6, 16, 26
+                s if s.ends_with('6') => make_key(KeyCode::PageDown, KeyModifiers::NONE),
+                // Home: 1, 7, 17
+                s if s == "1" || s == "7" || s == "17" => {
+                    make_key(KeyCode::Home, KeyModifiers::NONE)
+                }
+                // End: 4, 8, 18, 24
+                s if s == "4" || s == "8" || s == "18" || s == "24" => {
+                    make_key(KeyCode::End, KeyModifiers::NONE)
+                }
+                // Delete: 3, 23
+                s if s == "3" || s == "23" => make_key(KeyCode::Delete, KeyModifiers::NONE),
+                // Insert: 2, 22
+                s if s == "2" || s == "22" => make_key(KeyCode::Insert, KeyModifiers::NONE),
                 _ => make_key(KeyCode::Char('?'), KeyModifiers::NONE),
             }
         }
