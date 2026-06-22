@@ -100,19 +100,17 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         // Unordered list
         if raw_line.starts_with("- ") || raw_line.starts_with("* ") {
             let content = &raw_line[2..];
-            lines.push(Line::from(vec![
-                Span::styled("  • ", Style::default().fg(Color::DarkGray)),
-                Span::raw(parse_inline(content)),
-            ]));
+            let mut spans = vec![Span::styled("  • ", Style::default().fg(Color::DarkGray))];
+            spans.extend(parse_inline(content));
+            lines.push(Line::from(spans));
             continue;
         }
 
         // Ordered list
         if let Some(rest) = parse_ordered_list(raw_line) {
-            lines.push(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::raw(parse_inline(rest)),
-            ]));
+            let mut spans = vec![Span::styled("  ", Style::default())];
+            spans.extend(parse_inline(rest));
+            lines.push(Line::from(spans));
             continue;
         }
 
@@ -135,72 +133,107 @@ pub fn render_markdown(text: &str) -> Vec<Line<'static>> {
         }
 
         // Regular text with inline formatting
-        lines.push(Line::from(Span::raw(parse_inline(raw_line))));
+        let inline_spans = parse_inline(raw_line);
+        lines.push(Line::from(inline_spans));
     }
 
     lines
 }
 
 /// Parsea formato inline: **bold**, *italic*, `code`, [text](url).
-fn parse_inline(text: &str) -> String {
-    let mut result = String::new();
-    let mut chars = text.chars().peekable();
+/// Retorna `Vec<Span>` con estilo aplicado.
+fn parse_inline(text: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut current = String::new();
 
-    while let Some(c) = chars.next() {
-        match c {
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next(); // consume second *
-                if let Some(end) = find_closing(text, &mut chars, '*') {
-                    result.push_str(&format!("[bold:{end}]"));
-                } else {
-                    result.push_str("**");
+    while i < len {
+        // **bold**
+        if i + 1 < len && chars[i] == '*' && chars[i + 1] == '*' {
+            if let Some(end) = find_closing_char(&chars, i + 2, '*') {
+                if !current.is_empty() {
+                    spans.push(Span::raw(std::mem::take(&mut current)));
                 }
+                let bold: String = chars[i + 2..end].iter().collect();
+                spans.push(Span::styled(
+                    bold,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ));
+                i = end + 1;
+                continue;
             }
-            '*' if chars.peek() != Some(&'*') => {
-                if let Some(end) = find_closing(text, &mut chars, '*') {
-                    result.push_str(&format!("[italic:{end}]"));
-                } else {
-                    result.push('*');
-                }
-            }
-            '`' => {
-                if let Some(end) = find_closing(text, &mut chars, '`') {
-                    result.push_str(&format!("[code:{end}]"));
-                } else {
-                    result.push('`');
-                }
-            }
-            '[' => {
-                // Simple link: [text](url)
-                if let Some(end_bracket) = find_closing(text, &mut chars, ']') {
-                    if chars.peek() == Some(&'(') {
-                        chars.next(); // consume (
-                        if let Some(end_paren) = find_closing(text, &mut chars, ')') {
-                            result.push_str(&format!("[link:{end_bracket}]({end_paren})"));
-                            continue;
-                        }
-                    }
-                    result.push_str(&format!("[{end_bracket}]"));
-                } else {
-                    result.push('[');
-                }
-            }
-            _ => result.push(c),
         }
+        // *italic*
+        if chars[i] == '*' && (i + 1 >= len || chars[i + 1] != '*') {
+            if let Some(end) = find_closing_char(&chars, i + 1, '*') {
+                if !current.is_empty() {
+                    spans.push(Span::raw(std::mem::take(&mut current)));
+                }
+                let italic: String = chars[i + 1..end].iter().collect();
+                spans.push(Span::styled(
+                    italic,
+                    Style::default().add_modifier(Modifier::ITALIC),
+                ));
+                i = end + 1;
+                continue;
+            }
+        }
+        // `code`
+        if chars[i] == '`' {
+            if let Some(end) = find_closing_char(&chars, i + 1, '`') {
+                if !current.is_empty() {
+                    spans.push(Span::raw(std::mem::take(&mut current)));
+                }
+                let code: String = chars[i + 1..end].iter().collect();
+                spans.push(Span::styled(code, Style::default().fg(Color::Yellow)));
+                i = end + 1;
+                continue;
+            }
+        }
+        // [text](url) — simple link display
+        if chars[i] == '[' {
+            if let Some(end_bracket) = find_closing_char(&chars, i + 1, ']') {
+                if end_bracket + 1 < len && chars[end_bracket + 1] == '(' {
+                    if let Some(end_paren) = find_closing_char(&chars, end_bracket + 2, ')') {
+                        if !current.is_empty() {
+                            spans.push(Span::raw(std::mem::take(&mut current)));
+                        }
+                        let link_text: String = chars[i + 1..end_bracket].iter().collect();
+                        let url: String = chars[end_bracket + 2..end_paren].iter().collect();
+                        spans.push(Span::styled(
+                            link_text,
+                            Style::default().fg(Color::Blue),
+                        ));
+                        spans.push(Span::styled(
+                            format!(" ({url})"),
+                            Style::default().fg(Color::DarkGray),
+                        ));
+                        i = end_paren + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        current.push(chars[i]);
+        i += 1;
     }
-    result
+
+    if !current.is_empty() {
+        spans.push(Span::raw(current));
+    }
+
+    if spans.is_empty() {
+        spans.push(Span::raw(text.to_string()));
+    }
+
+    spans
 }
 
-/// Busca el cierre de un delimitador en el texto restante.
-fn find_closing(_text: &str, chars: &mut std::iter::Peekable<std::str::Chars>, delimiter: char) -> Option<String> {
-    let mut buf = String::new();
-    for c in chars.by_ref() {
-        if c == delimiter {
-            return Some(buf);
-        }
-        buf.push(c);
-    }
-    None
+/// Busca un carácter de cierre en un slice de chars.
+fn find_closing_char(chars: &[char], start: usize, close: char) -> Option<usize> {
+    (start..chars.len()).find(|&i| chars[i] == close)
 }
 
 /// Detecta si una línea es una lista ordenada ("1. ", "2. ", etc.).

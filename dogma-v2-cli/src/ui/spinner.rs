@@ -10,8 +10,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-/// Runas para el ciclo de animación.
-const RUNES: [&str; 6] = ["᚛", "᚜", "ᛟ", "ᛝ", "ᛜ", "ᛛ"];
+/// Frames de animación — caracteres ASCII seguros.
+const FRAMES: [&str; 4] = ["○", "◎", "●", "◎"];
 
 /// Indicador animado que muestra una rune rotativa.
 pub struct Spinner {
@@ -39,12 +39,12 @@ impl Spinner {
 
     /// Avanza al siguiente frame de animación.
     pub fn tick(&mut self) {
-        self.frame = (self.frame + 1) % RUNES.len();
+        self.frame = (self.frame + 1) % FRAMES.len();
     }
 
     /// Rune actual.
     pub fn current(&self) -> &str {
-        RUNES[self.frame]
+        FRAMES[self.frame]
     }
 
     /// Renderiza el spinner en el area dado.
@@ -78,25 +78,25 @@ mod tests {
     #[test]
     fn test_spinner_new() {
         let s = Spinner::new();
-        assert_eq!(s.current(), "᚛");
+        assert_eq!(s.current(), "○");
     }
 
     #[test]
     fn test_spinner_tick() {
         let mut s = Spinner::new();
         s.tick();
-        assert_eq!(s.current(), "᚜");
+        assert_eq!(s.current(), "◎");
         s.tick();
-        assert_eq!(s.current(), "ᛟ");
+        assert_eq!(s.current(), "●");
     }
 
     #[test]
     fn test_spinner_wraps() {
         let mut s = Spinner::new();
-        for _ in 0..RUNES.len() {
+        for _ in 0..FRAMES.len() {
             s.tick();
         }
-        assert_eq!(s.current(), "᚛");
+        assert_eq!(s.current(), "○");
     }
 
     #[test]

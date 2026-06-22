@@ -8,7 +8,7 @@
 //!   memoria de dogma-vdb.
 //! * `dogma chat "<prompt>"` — Ejecución rápida de una interacción.
 //! * `dogma interactive [prompt]` — Modo interactivo con UI en terminal.
-//!   Soporta historial de input (Up/Down), multi-línea (Shift+Enter),
+//!   Soporta historial de input (Up/Down), multi-línea (Ctrl+J),
 //!   scroll del chat (PageUp/PageDown), y slash commands.
 //! * `dogma plan "<task>"` — Planificación estructurada de tareas.
 //!
@@ -526,7 +526,7 @@ async fn cmd_interactive(
             Some(event) = input_rx.recv() => {
                 match event {
                     InputEvent::Key(key) => {
-                        use crossterm::event::KeyCode;
+                        use crossterm::event::{KeyCode, KeyModifiers};
                         match key.code {
                             KeyCode::Enter => {
                                 // Shift+Enter detection: si el buffer ya tiene
@@ -561,7 +561,7 @@ async fn cmd_interactive(
                                              │                                                           │\n\
                                              │  INPUT                                                     │\n\
                                              │    <text> Enter — Send prompt to agent                    │\n\
-                                             │    Shift+Enter  — New line in multi-line input            │\n\
+                                             │    Ctrl+J         — New line in multi-line input            │\n\
                                              │    Up / Down    — Navigate input history                  │\n\
                                              │                                                           │\n\
                                              │  SCROLL                                                    │\n\
@@ -613,6 +613,11 @@ async fn cmd_interactive(
                             }
                             KeyCode::Backspace => {
                                 input_buffer.pop();
+                                renderer.show_input(&input_buffer);
+                            }
+                            // Ctrl+J = insert newline (multi-line input)
+                            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                input_buffer.push('\n');
                                 renderer.show_input(&input_buffer);
                             }
                             KeyCode::Char(c) => {

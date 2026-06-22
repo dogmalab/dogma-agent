@@ -65,6 +65,9 @@ pub fn spawn_input_reader() -> mpsc::UnboundedReceiver<InputEvent> {
 }
 
 /// Lee una secuencia de escape CSI y envía el KeyEvent correspondiente.
+///
+/// Consume TODOS los bytes de la secuencia hasta encontrar un terminador
+/// (letra mayúscula, `~`, o byte fuera de rango).
 fn handle_escape(
     reader: &mut std::io::BufReader<std::fs::File>,
     tx: &mpsc::UnboundedSender<InputEvent>,
@@ -82,39 +85,60 @@ fn handle_escape(
         return;
     }
 
-    // CSI sequence: ESC [ ...
-    let mut param = [0u8; 1];
-    if std::io::Read::read(reader, &mut param).is_err() {
-        return;
+    // CSI sequence: ESC [ ... — leer todo hasta terminador
+    let mut param_buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        if std::io::Read::read(reader, &mut byte).is_err() {
+            return;
+        }
+        let b = byte[0];
+        // Terminadores CSI: letra mayúscula (A-Z) o tilde (~)
+        if b.is_ascii_uppercase() || b == b'~' {
+            if b == b'~' {
+                // La secuencia completa es ESC [ <param_buf> ~
+                // El último byte del param_buf es el número real
+                if param_buf.last().is_some() {
+                    param_buf.push(b);
+                    resolve_csi(&param_buf, tx);
+                    return;
+                }
+            }
+            // Letra mayúscula: ESC [ <param_buf> <letter>
+            param_buf.push(b);
+            resolve_csi(&param_buf, tx);
+            return;
+        }
+        param_buf.push(b);
+        // Límite de seguridad
+        if param_buf.len() > 10 {
+            return;
+        }
     }
+}
 
-    let key = match param[0] {
-        b'A' => make_key(KeyCode::Up, KeyModifiers::NONE),
-        b'B' => make_key(KeyCode::Down, KeyModifiers::NONE),
-        b'C' => make_key(KeyCode::Right, KeyModifiers::NONE),
-        b'D' => make_key(KeyCode::Left, KeyModifiers::NONE),
-        b'H' => make_key(KeyCode::Home, KeyModifiers::NONE),
-        b'F' => make_key(KeyCode::End, KeyModifiers::NONE),
-        b'Z' => make_key(KeyCode::BackTab, KeyModifiers::SHIFT),
-        b'5' => {
-            let mut tilde = [0u8; 1];
-            let _ = std::io::Read::read(reader, &mut tilde);
-            make_key(KeyCode::PageUp, KeyModifiers::NONE)
-        }
-        b'6' => {
-            let mut tilde = [0u8; 1];
-            let _ = std::io::Read::read(reader, &mut tilde);
-            make_key(KeyCode::PageDown, KeyModifiers::NONE)
-        }
-        b'1' => {
-            let mut tilde = [0u8; 1];
-            let _ = std::io::Read::read(reader, &mut tilde);
-            make_key(KeyCode::Home, KeyModifiers::NONE)
-        }
-        b'4' => {
-            let mut tilde = [0u8; 1];
-            let _ = std::io::Read::read(reader, &mut tilde);
-            make_key(KeyCode::End, KeyModifiers::NONE)
+/// Resuelve una secuencia CSI completa.
+fn resolve_csi(param_buf: &[u8], tx: &mpsc::UnboundedSender<InputEvent>) {
+    let key = match param_buf.last() {
+        Some(b'A') => make_key(KeyCode::Up, KeyModifiers::NONE),
+        Some(b'B') => make_key(KeyCode::Down, KeyModifiers::NONE),
+        Some(b'C') => make_key(KeyCode::Right, KeyModifiers::NONE),
+        Some(b'D') => make_key(KeyCode::Left, KeyModifiers::NONE),
+        Some(b'H') => make_key(KeyCode::Home, KeyModifiers::NONE),
+        Some(b'F') => make_key(KeyCode::End, KeyModifiers::NONE),
+        Some(b'Z') => make_key(KeyCode::BackTab, KeyModifiers::SHIFT),
+        Some(b'~') => {
+            // ESC [ N ~ — PageUp (5), PageDown (6), Home (1), End (4)
+            let param_str = std::str::from_utf8(&param_buf[..param_buf.len() - 1]).unwrap_or("");
+            match param_str {
+                "5" => make_key(KeyCode::PageUp, KeyModifiers::NONE),
+                "6" => make_key(KeyCode::PageDown, KeyModifiers::NONE),
+                "1" | "7" => make_key(KeyCode::Home, KeyModifiers::NONE),
+                "4" | "8" => make_key(KeyCode::End, KeyModifiers::NONE),
+                "3" => make_key(KeyCode::Delete, KeyModifiers::NONE),
+                "2" => make_key(KeyCode::Insert, KeyModifiers::NONE),
+                _ => make_key(KeyCode::Char('?'), KeyModifiers::NONE),
+            }
         }
         _ => make_key(KeyCode::Char('?'), KeyModifiers::NONE),
     };
@@ -133,7 +157,8 @@ fn make_key(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
 
 fn byte_to_keyevent(byte: u8) -> KeyEvent {
     let (code, modifiers) = match byte {
-        b'\r' | b'\n' => (KeyCode::Enter, KeyModifiers::NONE),
+        b'\r' => (KeyCode::Enter, KeyModifiers::NONE),
+        b'\n' => (KeyCode::Char('j'), KeyModifiers::CONTROL), // Ctrl+J = newline
         b'\x7f' | b'\x08' => (KeyCode::Backspace, KeyModifiers::NONE),
         b'\t' => (KeyCode::Tab, KeyModifiers::NONE),
         b if (0x20..0x7f).contains(&b) => (KeyCode::Char(b as char), KeyModifiers::NONE),
