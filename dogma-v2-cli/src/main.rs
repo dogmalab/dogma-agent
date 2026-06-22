@@ -549,6 +549,11 @@ async fn cmd_interactive(
                                         eprintln!(
                                             "┌─ Dogma 2.0 Interactive ─────────────────────────────────┐\n\
                                              │                                                           │\n\
+                                             │  START                                                     │\n\
+                                             │    dogma interactive            — Start interactive mode  │\n\
+                                             │    dogma interactive \"hello\"    — Start with initial msg  │\n\
+                                             │    dogma chat \"quick prompt\"    — Single-shot (no TUI)    │\n\
+                                             │                                                           │\n\
                                              │  COMANDOS                                                 │\n\
                                              │    /help        — Show this help                          │\n\
                                              │    /exit /quit  — Exit interactive mode                   │\n\
