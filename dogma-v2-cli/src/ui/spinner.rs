@@ -78,16 +78,16 @@ mod tests {
     #[test]
     fn test_spinner_new() {
         let s = Spinner::new();
-        assert_eq!(s.current(), "○");
+        assert_eq!(s.current(), "o");
     }
 
     #[test]
     fn test_spinner_tick() {
         let mut s = Spinner::new();
         s.tick();
-        assert_eq!(s.current(), "◎");
+        assert_eq!(s.current(), "O");
         s.tick();
-        assert_eq!(s.current(), "●");
+        assert_eq!(s.current(), "0");
     }
 
     #[test]
@@ -96,7 +96,7 @@ mod tests {
         for _ in 0..FRAMES.len() {
             s.tick();
         }
-        assert_eq!(s.current(), "○");
+        assert_eq!(s.current(), "o");
     }
 
     #[test]
