@@ -1,9 +1,37 @@
 # dogma-agent
 
-> **Active workspace for the Dogma ecosystem — Agent runtime, IPC gateway, and shared types.**
-> Low-dependency, CLI-first, state persisted in dogma-vdb.
+> The agent harness of the [Dogma](https://github.com/dogmalab/.github) platform.
+> An AI runtime in one binary. Three tools, a loop, a state backend, and a
+> Cost Gate that asks before it spends. Air-gapped by design.
 
-dogma-agent is a Rust workspace that powers the next generation of the Dogma AI agent framework. It replaces the original Dogma 1.x monolith with a minimal, decoupled design: a **common type library**, a **core agent runtime**, a **CLI facade**, and a **network gateway**.
+**Read first:** the [Dogma Manifesto](https://github.com/dogmalab/.github/blob/main/MANIFESTO.md)
+explains why this exists and what it is for. This document is the
+agent-harness-specific README.
+
+---
+
+## What dogma-agent is
+
+`dogma-agent` is the **agent harness** of the Dogma platform. It is a
+Rust workspace that contains:
+
+- the agent runtime (`dogma-v2-core`),
+- the CLI / TUI facade (`dogma-v2-cli`),
+- the shared types and NDJSON protocol (`dogma-v2-common`),
+- and (historically) the network gateway (now in its own repo,
+  [`dogmalab/dogma-gateway`](https://github.com/dogmalab/dogma-gateway)).
+
+The agent harness is **air-gapped by design**: it has no HTTP
+listener, no inbound sockets. All state lives in `.vdb` files
+through the [state harness](https://github.com/dogmalab/dogma-vdb)
+via a path dependency. The network harness is the only component
+that touches the network.
+
+The flagship pattern inside the agent harness is
+[Enriched Inference (IE)](https://github.com/dogmalab/.github/blob/main/GLOSSARY.md#enriched-inference-ie):
+N LLMs run in parallel, their responses are synthesized, iterated,
+and gated by a [Cost Gate](https://github.com/dogmalab/.github/blob/main/GLOSSARY.md#cost-gate)
+that asks the user to confirm the cost before the run.
 
 ## Workspace Crates
 
@@ -13,6 +41,19 @@ dogma-agent is a Rust workspace that powers the next generation of the Dogma AI 
 | `dogma-v2-core` | Async agent runtime — tool loop (RSI), LLM provider abstraction, state management on dogma-vdb, context compressor | ~1,800 |
 | `dogma-v2-cli` | Terminal entrypoint — Clap-based command dispatch, NDJSON output mode | ~265 |
 | `dogma-gateway` | Axum HTTP reverse proxy — edge validation, SSE streaming IPC to agent, RAG orchestration | ~270 |
+
+## Workspace Crates
+
+| Crate | Description |
+|---|---|
+| `dogma-v2-common` | Shared error types, NDJSON event protocol, and foundational traits |
+| `dogma-v2-core` | Async agent runtime — tool loop (RSI), LLM provider abstraction, state management on dogma-vdb, context compressor, **Enriched Inference (IE)**, **Cost Gate** |
+| `dogma-v2-cli` | Terminal entrypoint — Clap-based command dispatch, NDJSON output mode, `/ei` slash command |
+
+> **Note:** the `dogma-gateway` crate is no longer part of this
+> workspace. It has been moved to
+> [`dogmalab/dogma-gateway`](https://github.com/dogmalab/dogma-gateway)
+> so the network boundary is in its own repository.
 
 ## Architecture
 
@@ -29,6 +70,14 @@ External Client ──HTTP──► dogma-gateway ──IPC pipes──► dogma
 - `dogma-v2-core` is completely network-isolated. All state lives in `dogma-vdb` via memory-mapped I/O.
 - `dogma-v2-common` provides typed errors and NDJSON event types shared across all crates.
 - `dogma-v2-cli` is a thin CLI wrapper around the core runtime.
+
+**Important note for contributors:** the `dogma-gateway` crate that
+appears in the architecture diagram and the legacy Cargo.toml is
+**stub code only**. The real backends (IPC pipes to the agent,
+mmap to the state harness) are F2 in the platform
+[ROADMAP](https://github.com/dogmalab/.github/blob/main/ROADMAP.md).
+Until then, `dogma-gateway` lives in its own repository and
+returns hardcoded responses.
 
 ## Quick Start
 
