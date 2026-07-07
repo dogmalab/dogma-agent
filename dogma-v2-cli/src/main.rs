@@ -464,11 +464,13 @@ async fn cmd_enriched_inference(
     let dogma_config =
         config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
 
+    // Por MVP, todos los proposers usan el mismo provider/modelo
+    // configurado en `keys.toml`. Cuando se agregue soporte para
+    // múltiples modelos por proposer, esto se reemplaza por una
+    // lista explícita de configs.
     let mut proposers: Vec<Arc<dyn LLMProvider>> = Vec::new();
-    for i in 0..n_proposers {
-        let mut cfg = dogma_config.provider.clone();
-        cfg.model = format!("{}-p{}", cfg.model, i + 1);
-        let proposer = Arc::new(OpenAiProvider::new(cfg)?);
+    for _ in 0..n_proposers {
+        let proposer = Arc::new(OpenAiProvider::new(dogma_config.provider.clone())?);
         proposers.push(proposer);
     }
 
