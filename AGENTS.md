@@ -319,16 +319,23 @@ Esta sección lista los items específicos del agent harness.
 
 ### En curso (F2 + F3)
 
-- [ ] `enriched.rs` — patrón de Inferencia Enriquecida
-- [ ] `cost_gate.rs` — el patrón de Cost Gate con `Interactive`,
-      `Auto`, `Trusted`, `Webhook`
-- [ ] `cost_estimator.rs` — trait `CostCalculable` con impls por
-      provider
-- [ ] `quality_estimator.rs` — trait `QualityCalculable` con
-      baseline heurística
-- [ ] LLMProvider fan-out y fan-in
-- [ ] Persistencia en `.vdb` de `CostProposal`, `CostDecision`,
-      `CostActual`
+- [x] `enriched.rs` — patrón de Inferencia Enriquecida (`MoaLoop`,
+      `MoaConfig`, `MoaResult`, fan-out paralelo via `tokio::spawn`,
+      synthesis iterado)
+- [x] `cost_gate.rs` — el patrón de Cost Gate con `Interactive`,
+      `Auto`, `Trusted`, `Webhook` (4 impls)
+- [x] `cost_estimator.rs` — `CostEstimate`, `CostBreakdown`,
+      `ProviderCost`, `CostDelta`, `pricing_for()` lookup
+- [x] `quality_estimator.rs` — `QualityEstimate`, `ModelTier`,
+      `HeuristicQualityEstimator` con diversity bonus
+- [x] LLMProvider fan-out y fan-in (`MoaLoop::run_proposers_parallel`)
+- [x] Persistencia en `.vdb` de `CostProposal`, `CostActual`,
+      `MoAProposer`, `MoACompiler` (via `SessionManager::persist_node`)
+- [x] CLI: comando `dogma ei` con flags `--compiler`,
+      `--n-proposers`, `--iterations`, `--gate`
+- [x] Tests: `tests/enriched_inference.rs` con `MockProvider`
+      (sin HTTP, paralelismo, abort del gate, formato del
+      synthesis prompt)
 - [ ] Conectar el embedder real en `Compressor` (FIXME existente)
 
 ### Pendiente (F4+)

@@ -48,12 +48,45 @@ that asks the user to confirm the cost before the run.
 |---|---|
 | `dogma-v2-common` | Shared error types, NDJSON event protocol, and foundational traits |
 | `dogma-v2-core` | Async agent runtime — tool loop (RSI), LLM provider abstraction, state management on dogma-vdb, context compressor, **Enriched Inference (IE)**, **Cost Gate** |
-| `dogma-v2-cli` | Terminal entrypoint — Clap-based command dispatch, NDJSON output mode, `/ei` slash command |
+| `dogma-v2-cli` | Terminal entrypoint — Clap-based command dispatch, NDJSON output mode, `dogma ei` command |
 
 > **Note:** the `dogma-gateway` crate is no longer part of this
 > workspace. It has been moved to
 > [`dogmalab/dogma-gateway`](https://github.com/dogmalab/dogma-gateway)
 > so the network boundary is in its own repository.
+
+## Commands
+
+| Command | Description |
+|---|---|
+| `dogma init` | Initialize the agent data directory and create the `.vdb` files. |
+| `dogma chat "<prompt>"` | One-shot interaction with the single-LLM runtime loop. |
+| `dogma interactive [prompt]` | TUI mode with chat history, scroll, and slash commands. |
+| `dogma plan "<task>"` | Structured planning (placeholder at MVP). |
+| `dogma ei "<query>"` | **Enriched Inference** — N LLMs in parallel with a compiler, gated by Cost Gate. Flags: `--compiler`, `--n-proposers`, `--iterations`, `--gate {interactive\|auto\|trusted}`. |
+
+### `dogma ei` — Enriched Inference (the flagship pattern)
+
+```sh
+# Three local models, two iterations, interactive Cost Gate
+dogma ei "explain the difference between async and parallel in Rust" \
+    --n-proposers 3 --iterations 2 --gate interactive
+
+# Mix: 2 local proposers + Claude Sonnet as compiler
+dogma ei "design a database schema for..." \
+    --compiler claude-sonnet-4-20250514 --gate interactive
+
+# Budget-aware: auto-approve if cost is under $0.10
+dogma ei "summarize this paper" --gate auto
+
+# CI / arena: auto-approve, log everything
+dogma ei "..." --gate trusted
+```
+
+The Cost Gate is **mandatory**. Before any tokens are spent, the
+user sees an estimate in USD, tokens, and wall-time, plus the
+proposed configuration. The decision (`Proceed`, `ProceedWithConfig`,
+`Abort`) is logged in the session graph (`sessions.vdb`) for audit.
 
 ## Architecture
 
