@@ -145,17 +145,34 @@ impl CostBreakdown {
             ProviderRole::Proposer => {
                 self.total_estimate = self.total_estimate.add(&cost.estimate);
                 if let Some(actual) = &cost.actual {
-                    let actual = self.total_actual.clone().unwrap_or_else(CostEstimate::zero);
-                    self.total_actual = Some(actual.add(actual));
+                    let current_actual = self
+                        .total_actual
+                        .clone()
+                        .unwrap_or_else(CostEstimate::zero);
+                    self.total_actual = Some(current_actual.add(actual));
                 }
                 self.proposers.push(cost);
             }
             ProviderRole::Compiler => {
                 self.total_estimate = self.total_estimate.add(&cost.estimate);
+                if let Some(actual) = &cost.actual {
+                    let current_actual = self
+                        .total_actual
+                        .clone()
+                        .unwrap_or_else(CostEstimate::zero);
+                    self.total_actual = Some(current_actual.add(actual));
+                }
                 self.compiler = Some(cost);
             }
             ProviderRole::Verifier => {
                 self.total_estimate = self.total_estimate.add(&cost.estimate);
+                if let Some(actual) = &cost.actual {
+                    let current_actual = self
+                        .total_actual
+                        .clone()
+                        .unwrap_or_else(CostEstimate::zero);
+                    self.total_actual = Some(current_actual.add(actual));
+                }
                 self.verifiers.push(cost);
             }
         }
