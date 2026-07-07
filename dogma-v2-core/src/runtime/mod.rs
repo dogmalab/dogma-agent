@@ -1,16 +1,24 @@
-//! # Runtime — Loop principal de IA y trait de proveedores LLM
+//! # Runtime — Loop principal de IA, patrones compuestos y proveedores
 //!
-//! El runtime expone un trait genérico `LLMProvider` para proveedores
-//! OpenAI-Compatibles, eliminando implementaciones hardcodeadas por
-//! proveedor. El `RuntimeLoop` orquesta el ciclo RSI:
+//! El runtime expone:
 //!
-//! 1. Recibe un prompt del usuario.
-//! 2. Lo envía al LLM vía el provider activo.
-//! 3. Inspecciona la respuesta en busca de tool calls.
-//! 4. Ejecuta las herramientas y realimenta el resultado al LLM.
-//! 5. Repite hasta que el LLM responde con un mensaje final.
+//! * `LLMProvider` — trait genérico para proveedores OpenAI-Compatibles.
+//! * `RuntimeLoop` — el ciclo RSI de un solo LLM con tool calls.
+//! * `enriched::MoaLoop` — el patrón flagship: N LLMs en paralelo
+//!   sintetizados por un compiler (Mixture-of-Agents / Enriched
+//!   Inference).
+//! * `cost_estimator::CostCalculable` + `cost_gate::CostGateImpl` —
+//!   el patrón "AI should ask before it spends" (Cost Gate).
+//! * `quality_estimator::QualityCalculable` — el estimador (heurístico
+//!   en MVP, calibrado por el open benchmark en F5).
+//! * `sub_agent` y `wasm_sandbox` — aislamiento de sub-agentes y
+//!   ejecución segura de scripts.
 
+pub mod cost_estimator;
+pub mod cost_gate;
+pub mod enriched;
 pub mod loop_handle;
 pub mod provider;
+pub mod quality_estimator;
 pub mod sub_agent;
 pub mod wasm_sandbox;

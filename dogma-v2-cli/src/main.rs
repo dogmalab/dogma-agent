@@ -46,8 +46,11 @@ use dogma_v2_common::Result;
 use dogma_v2_common::event::{Event, EventSeverity, EventType};
 use dogma_v2_core::RuntimeLoop;
 use dogma_v2_core::models::delegation::{AgentRole, SubAgentConfig};
+use dogma_v2_core::runtime::cost_gate::{AutoCostGate, CostGateImpl, InteractiveCostGate, TrustedCostGate};
+use dogma_v2_core::runtime::enriched::{MoaConfig, MoaLoop};
 use dogma_v2_core::runtime::loop_handle::LoopConfig;
 use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
+use dogma_v2_core::runtime::provider::ProviderConfig;
 use dogma_v2_core::runtime::sub_agent::SubAgentManager;
 use dogma_v2_core::state::session::SessionManager;
 use dogma_v2_core::tools::DelegateTaskTool;
@@ -104,6 +107,25 @@ enum Commands {
         /// Descripción de la tarea a planificar.
         task: String,
     },
+
+    /// Ejecuta Inferencia Enriquecida: N LLMs en paralelo con un
+    /// compiler que sintetiza. Gated por Cost Gate.
+    EnrichedInference {
+        /// Query para los proposers.
+        query: String,
+        /// Modelo del compiler (opcional; por defecto el más fuerte disponible).
+        #[arg(long)]
+        compiler: Option<String>,
+        /// Número de proposers en paralelo (default 3).
+        #[arg(long, default_value_t = 3)]
+        n_proposers: usize,
+        /// Número de iteraciones del compiler (default 2).
+        #[arg(long, default_value_t = 2)]
+        iterations: usize,
+        /// Modo del Cost Gate: interactive, auto, trusted.
+        #[arg(long, default_value = "interactive")]
+        gate: String,
+    },
 }
 
 fn main() {
@@ -150,6 +172,24 @@ async fn run(cli: Cli) -> Result<()> {
             cmd_interactive(&data_dir, initial_prompt.as_deref(), cli.json, sandbox_mode).await
         }
         Commands::Plan { task } => cmd_plan(&data_dir, &task, cli.json, sandbox_mode).await,
+        Commands::EnrichedInference {
+            query,
+            compiler,
+            n_proposers,
+            iterations,
+            gate,
+        } => {
+            cmd_enriched_inference(
+                &data_dir,
+                &query,
+                compiler.as_deref(),
+                n_proposers,
+                iterations,
+                &gate,
+                cli.json,
+            )
+            .await
+        }
     }
 }
 
@@ -383,6 +423,114 @@ async fn cmd_plan(
 
     if !json_mode {
         println!("{plan}");
+    }
+
+    Ok(())
+}
+
+/// Ejecuta Inferencia Enriquecida (MoA) con N proposers y un compiler.
+///
+/// Por MVP, todos los proposers usan el mismo provider/modelo
+/// configurado en `~/.dogma/config.toml`. El compiler puede
+/// especificarse via `--compiler <model>`; si no, usa el mismo
+/// modelo que los proposers.
+///
+/// El Cost Gate es siempre obligatorio: el usuario ve el estimado
+/// de costo en USD, tokens y wall-time antes de gastar.
+#[allow(clippy::too_many_lines)]
+async fn cmd_enriched_inference(
+    data_dir: &PathBuf,
+    query: &str,
+    compiler_model: Option<&str>,
+    n_proposers: usize,
+    iterations: usize,
+    gate_kind: &str,
+    json_mode: bool,
+) -> Result<()> {
+    use dogma_v2_core::runtime::provider::LLMProvider;
+
+    emit_event(
+        json_mode,
+        &Event::new(
+            EventType::System,
+            EventSeverity::Info,
+            format!(
+                "Starting Enriched Inference: {n_proposers} proposers, {iterations} iters, gate={gate_kind}"
+            ),
+        ),
+    );
+
+    // ── 1. Cargar configuración y construir proposers + compiler ────
+    let dogma_config =
+        config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
+
+    let mut proposers: Vec<Arc<dyn LLMProvider>> = Vec::new();
+    for i in 0..n_proposers {
+        let mut cfg = dogma_config.provider.clone();
+        cfg.model = format!("{}-p{}", cfg.model, i + 1);
+        let proposer = Arc::new(OpenAiProvider::new(cfg)?);
+        proposers.push(proposer);
+    }
+
+    let mut compiler_cfg = dogma_config.provider.clone();
+    if let Some(model) = compiler_model {
+        compiler_cfg.model = model.to_string();
+    }
+    let compiler: Arc<dyn LLMProvider> = Arc::new(OpenAiProvider::new(compiler_cfg)?);
+
+    // ── 2. Construir el Cost Gate ───────────────────────────────────
+    let gate: Arc<dyn CostGateImpl> = match gate_kind {
+        "auto" => Arc::new(AutoCostGate { max_cost_usd: 1.0 }),
+        "trusted" => Arc::new(TrustedCostGate),
+        _ => Arc::new(InteractiveCostGate), // default: interactive
+    };
+
+    // ── 3. Construir el MoaLoop ─────────────────────────────────────
+    let moa_config = MoaConfig {
+        n_proposers,
+        max_iterations: iterations,
+        compiler: None,
+        enable_verification_skills: false,
+        ..MoaConfig::default()
+    };
+
+    let session = Arc::new(parking_lot::RwLock::new(
+        SessionManager::open(data_dir).map_err(|e| {
+            dogma_v2_common::error::Error::StorageCorrupted(e.to_string())
+        })?,
+    ));
+
+    let moa = MoaLoop::new(proposers, compiler, gate, moa_config).with_session(session);
+
+    // ── 4. Ejecutar ─────────────────────────────────────────────────
+    let result = moa.run(query).await?;
+
+    // ── 5. Emitir resultado ─────────────────────────────────────────
+    if json_mode {
+        emit_event(
+            json_mode,
+            &Event::new(
+                EventType::Done,
+                EventSeverity::Success,
+                serde_json::to_string(&result).unwrap_or_default(),
+            ),
+        );
+    } else {
+        println!();
+        println!("─── Enriched Inference Result ───");
+        println!("Iterations: {}", result.iterations.len());
+        println!("Total wall-time: {}ms", result.total_wall_time_ms);
+        println!(
+            "Quality estimate: {:.2} (basis: {:?})",
+            result.quality.expected_score, result.quality.basis
+        );
+        println!(
+            "Cost: ${:.4} (expected) — see session.vdb for breakdown",
+            result.cost.total_estimate.expected_cost_usd
+        );
+        println!();
+        println!("Final answer:");
+        println!("{}", result.final_text);
     }
 
     Ok(())

@@ -239,6 +239,31 @@ impl SessionManager {
         &self.collection
     }
 
+    /// Persiste un nodo arbitrario en la colección de la sesión.
+    ///
+    /// Usado por patrones como Enriched Inference que necesitan
+    /// almacenar `MoAProposer`, `MoACompiler`, `CostProposal`,
+    /// `CostDecision`, `CostActual` como nodos con `node_type`
+    /// personalizados. El caller es responsable de poner los
+    /// metadatos correctos.
+    ///
+    /// # Errors
+    ///
+    /// Devuelve error de I/O si la colección no acepta la inserción.
+    pub fn persist_node(&mut self, doc: Document) -> Result<()> {
+        self.collection
+            .insert(doc)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))
+    }
+
+    /// Cuenta todos los nodos con un `node_type` dado.
+    pub fn count_nodes_by_type(&self, node_type: &str) -> usize {
+        self.collection
+            .documents()
+            .filter(|d| d.metadata_val("node_type") == Some(node_type))
+            .count()
+    }
+
     /// Busca contexto semánticamente similar en el historial de la sesión.
     ///
     /// Usa el embedder configurado para convertir `query` en vector,
