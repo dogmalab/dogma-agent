@@ -53,9 +53,10 @@ pub enum AgentEvent {
     },
     /// Actualización periódica del estado cognitivo del agente.
     StatusUpdate {
-        /// Porcentaje de ventana de contexto usado (0.0 - 1.0).
+        /// Fracción de la ventana de contexto usada por la conversación
+        /// (0.0–1.0), calculada como `prompt_tokens / context_window`.
         context_used: f32,
-        /// Total de tokens consumidos en la sesión.
+        /// Tokens totales acumulados en la sesión.
         total_tokens: u64,
         /// Modelo activo.
         model: String,

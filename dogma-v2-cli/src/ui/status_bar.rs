@@ -15,6 +15,7 @@ pub struct StatusBar {
     model: String,
     tokens: u64,
     context_pct: f32,
+    context_window: u32,
     busy: bool,
     git_branch: Option<String>,
 }
@@ -25,6 +26,7 @@ impl StatusBar {
             model: model.to_string(),
             tokens: 0,
             context_pct: 0.0,
+            context_window: 128_000,
             busy: false,
             git_branch: None,
         }
@@ -34,9 +36,17 @@ impl StatusBar {
         self.model = model.to_string();
     }
 
+    /// Establece la ventana de contexto del modelo (para el % real).
+    pub fn set_context_window(&mut self, window: u32) {
+        self.context_window = window.max(1);
+    }
+
+    /// Actualiza los tokens de sesión y la fracción de contexto usada.
+    ///
+    /// `context_pct` es una fracción 0.0–1.0 de la ventana del modelo.
     pub fn update_tokens(&mut self, tokens: u64, context_pct: f32) {
         self.tokens = tokens;
-        self.context_pct = context_pct;
+        self.context_pct = context_pct.clamp(0.0, 1.0);
     }
 
     pub fn set_busy(&mut self, busy: bool) {
@@ -57,7 +67,9 @@ impl StatusBar {
         let status_icon = if self.busy { spinner_frame } else { " " };
 
         let bar = build_context_bar(self.context_pct);
+        let pct = self.context_pct * 100.0;
         let tokens = format_tokens(self.tokens);
+        let window = format_tokens(u64::from(self.context_window));
         let git = self
             .git_branch
             .as_deref()
@@ -75,8 +87,10 @@ impl StatusBar {
             ),
             Span::raw("  "),
             Span::styled(&bar, Style::default().fg(Color::DarkGray)),
-            Span::raw("  "),
-            Span::styled(&tokens, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(" {pct:.1}% · {tokens} tok · {window} win"),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(git, Style::default().fg(Color::DarkGray)),
         ]);
 

@@ -48,12 +48,13 @@ use dogma_v2_core::RuntimeLoop;
 use dogma_v2_core::models::delegation::{AgentRole, SubAgentConfig};
 use dogma_v2_core::models::events::AgentEvent;
 use dogma_v2_core::models::plan::Plan;
-use dogma_v2_core::runtime::cost_gate::{AutoCostGate, CostGateImpl, InteractiveCostGate, TrustedCostGate};
+use dogma_v2_core::runtime::cost_gate::{
+    AutoCostGate, CostGateImpl, InteractiveCostGate, TrustedCostGate,
+};
 use dogma_v2_core::runtime::enriched::{MoaConfig, MoaLoop};
 use dogma_v2_core::runtime::loop_handle::LoopConfig;
 use dogma_v2_core::runtime::provider::embedder::HttpEmbedder;
 use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
-use dogma_v2_core::runtime::provider::ProviderConfig;
 use dogma_v2_core::runtime::provider::{LLMProvider, Message, MessageRole};
 use dogma_v2_core::runtime::sub_agent::SubAgentManager;
 use dogma_v2_core::state::session::SessionManager;
@@ -469,6 +470,7 @@ async fn setup_runtime(
     // ── 7. RuntimeLoop ──────────────────────────────────────────────
     let loop_config = LoopConfig {
         max_tool_iterations: config.max_tool_iterations,
+        context_window: config.context_window,
         ..LoopConfig::default()
     };
 
@@ -709,9 +711,8 @@ async fn cmd_enriched_inference(
     };
 
     let session = Arc::new(parking_lot::RwLock::new(
-        SessionManager::open(data_dir).map_err(|e| {
-            dogma_v2_common::error::Error::StorageCorrupted(e.to_string())
-        })?,
+        SessionManager::open(data_dir)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?,
     ));
 
     let moa = MoaLoop::new(proposers, compiler, gate, moa_config).with_session(session);
@@ -939,6 +940,7 @@ async fn cmd_interactive(
     let mut input_rx = ui::spawn_input_reader();
     let mut renderer = ui::Renderer::new();
     renderer.set_model(&model_name);
+    renderer.set_context_window(dogma_config.context_window);
     renderer.init();
 
     let mut input_buffer = String::new();

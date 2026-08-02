@@ -5,7 +5,7 @@
 //! ```text
 //! Row 0-N-5: chat area (scrollable)
 //! Row N-4:   tool calls
-//! Row N-3:   ▎ input
+//! Row N-3:   ▎ input (dynamic height, grows with content)
 //! Row N-2:   separator
 //! Row N-1:   status bar (model, context, tokens)
 //! ```
@@ -17,9 +17,12 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Wrap};
 
 use super::{ChatRenderer, Spinner, StatusBar, ToolDisplay};
+
+/// Máximo de filas visibles del input antes de hacer scroll interno.
+const MAX_INPUT_ROWS: u16 = 6;
 
 pub struct Renderer {
     terminal: Option<Terminal<CrosstermBackend<std::io::Stderr>>>,
@@ -87,15 +90,18 @@ impl Renderer {
             let area = frame.area();
             let inner = inset(area, 2);
 
+            let input_area_width = inner.width.max(1);
+            let input_rows = Self::input_rows(&input_buffer, input_area_width);
+
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(3),    // chat
-                    Constraint::Length(1), // tools
-                    Constraint::Length(1), // separator
-                    Constraint::Min(3),    // input (multiline, min 3 lines)
-                    Constraint::Length(1), // separator
-                    Constraint::Length(1), // status bar
+                    Constraint::Min(3),             // chat
+                    Constraint::Length(1),          // tools
+                    Constraint::Length(1),          // separator
+                    Constraint::Length(input_rows), // input (dynamic)
+                    Constraint::Length(1),          // separator
+                    Constraint::Length(1),          // status bar
                 ])
                 .split(inner);
 
@@ -106,6 +112,35 @@ impl Renderer {
             render_separator(frame, chunks[4]);
             self.status.render(frame, chunks[5], &spinner_frame);
         });
+    }
+
+    /// Calcula el alto dinámico del input a partir del contenido.
+    ///
+    /// Cada línea explícita (separada por `\n`) ocupa `ceil(len / width)`
+    /// filas. El resultado se clampa a `[1, MAX_INPUT_ROWS]`.
+    fn input_rows(buffer: &str, width: u16) -> u16 {
+        let width = width.max(1) as usize;
+        let mut rows: u16 = 0;
+        for line in buffer.split('\n') {
+            let line_rows = if line.is_empty() {
+                1
+            } else {
+                line.len().div_ceil(width).max(1) as u16
+            };
+            rows = rows.saturating_add(line_rows);
+            if rows >= MAX_INPUT_ROWS {
+                return MAX_INPUT_ROWS;
+            }
+        }
+        // Si la última línea llena exactamente el ancho, el cursor
+        // avanza a la siguiente fila.
+        let lines: Vec<&str> = buffer.split('\n').collect();
+        if let Some(last) = lines.last() {
+            if !last.is_empty() && last.len() % width == 0 {
+                rows += 1;
+            }
+        }
+        rows.clamp(1, MAX_INPUT_ROWS)
     }
 
     fn scroll_to_bottom(&mut self) {
@@ -124,6 +159,12 @@ impl Renderer {
 
     pub fn set_model(&mut self, model: &str) {
         self.status.set_model(model);
+        self.draw();
+    }
+
+    /// Configura la ventana de contexto del modelo para el % real de uso.
+    pub fn set_context_window(&mut self, window: u32) {
+        self.status.set_context_window(window);
         self.draw();
     }
 
@@ -280,21 +321,45 @@ fn render_separator(frame: &mut ratatui::Frame, area: Rect) {
 }
 
 fn render_input(frame: &mut ratatui::Frame, area: Rect, input_buffer: &str) {
-    // Render multiline input: split by newlines and display each line
+    let width = area.width.max(1) as usize;
+
     let lines: Vec<Line> = input_buffer
         .split('\n')
         .map(|line| Line::from(Span::raw(line.to_string())))
         .collect();
 
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 
-    // Position cursor at the end of the last line
-    let line_count = input_buffer.lines().count().max(1);
-    let last_line = input_buffer.lines().last().unwrap_or("");
-    let cursor_x = area.x + last_line.len() as u16;
-    let cursor_y = area.y + (line_count as u16).saturating_sub(1);
+    // Posicionar el cursor en su posición visual real tras el wrap.
+    let (col, row) = cursor_position(input_buffer, width);
+    let cursor_x = area.x.saturating_add(col as u16);
+    let cursor_y = area
+        .y
+        .saturating_add((row as u16).min(area.height.saturating_sub(1)));
     frame.set_cursor_position((cursor_x, cursor_y));
+}
+
+/// Calcula la posición visual (columna, fila 0-indexada) del cursor dentro
+/// del input, teniendo en cuenta el wrap a `width` columnas.
+fn cursor_position(buffer: &str, width: usize) -> (usize, usize) {
+    let width = width.max(1);
+    let lines: Vec<&str> = buffer.split('\n').collect();
+
+    let rows_before: usize = lines[..lines.len().saturating_sub(1)]
+        .iter()
+        .map(|l| l.chars().count().div_ceil(width).max(1))
+        .sum();
+
+    let last_len = lines.last().copied().unwrap_or("").chars().count();
+    let row = rows_before + (last_len / width);
+    let col = if last_len > 0 && last_len % width == 0 {
+        0
+    } else {
+        last_len % width
+    };
+
+    (col, row)
 }
 
 #[cfg(test)]
@@ -307,5 +372,35 @@ mod tests {
         let inner = inset(area, 2);
         assert_eq!(inner.x, 2);
         assert_eq!(inner.width, 76);
+    }
+
+    #[test]
+    fn test_input_rows_grows_with_content() {
+        // Ancho de 10 columnas.
+        assert_eq!(Renderer::input_rows("", 10), 1);
+        assert_eq!(Renderer::input_rows("hello", 10), 1);
+        assert_eq!(Renderer::input_rows("hello\nworld", 10), 2);
+        // Una línea que excede el ancho ocupa 2 filas.
+        assert_eq!(Renderer::input_rows("123456789012345", 10), 2);
+        // Una línea exacta al ancho necesita una fila extra para el cursor.
+        assert_eq!(Renderer::input_rows("1234567890", 10), 2);
+        // Clamp al máximo.
+        let many = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk";
+        assert_eq!(Renderer::input_rows(many, 10), MAX_INPUT_ROWS);
+    }
+
+    #[test]
+    fn test_cursor_position_wrap() {
+        // "abc" en ancho 10 → fila 0, col 3.
+        assert_eq!(cursor_position("abc", 10), (3, 0));
+        // "abc\ndef" → fila 1, col 3.
+        assert_eq!(cursor_position("abc\ndef", 10), (3, 1));
+        // Línea que excede el ancho: "1234567890123" (13 chars) en ancho 10
+        // → fila 1, col 3.
+        assert_eq!(cursor_position("1234567890123", 10), (3, 1));
+        // Línea exacta al ancho: "1234567890" → fila 1, col 0.
+        assert_eq!(cursor_position("1234567890", 10), (0, 1));
+        // Vacío → (0, 0).
+        assert_eq!(cursor_position("", 10), (0, 0));
     }
 }

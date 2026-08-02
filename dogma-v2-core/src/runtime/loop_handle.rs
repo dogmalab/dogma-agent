@@ -56,6 +56,8 @@ pub struct LoopConfig {
     pub context_max_relevant: usize,
     /// Umbral de similitud para considerar relevante (0.0–1.0).
     pub context_relevance_threshold: f32,
+    /// Ventana de contexto del modelo en tokens (para el % de uso).
+    pub context_window: u32,
 }
 
 impl Default for LoopConfig {
@@ -68,6 +70,7 @@ impl Default for LoopConfig {
             context_recent_turns: 5,
             context_max_relevant: 5,
             context_relevance_threshold: 0.3,
+            context_window: 128_000,
         }
     }
 }
@@ -77,6 +80,8 @@ impl Default for LoopConfig {
 struct LoopState {
     iteration: u32,
     messages: Vec<Message>,
+    /// Tokens totales consumidos en la sesión (acumulado).
+    session_tokens: u64,
 }
 
 /// Convierte un `Document` de dogma-vdb a un `Message` del provider.
@@ -204,6 +209,7 @@ impl RuntimeLoop {
             state: RwLock::new(LoopState {
                 iteration: 0,
                 messages: Vec::new(),
+                session_tokens: 0,
             }),
             event_tx,
             system_context,
@@ -547,20 +553,6 @@ impl RuntimeLoop {
                 self.maybe_compress_context().await;
             }
 
-            // Emitir evento de status (si hay UI conectada)
-            if let Some(ref tx) = self.event_tx {
-                let (msg_count, iteration) = {
-                    let state = self.state.read();
-                    (state.messages.len(), state.iteration)
-                };
-                let pct = if self.config.max_tool_iterations > 0 {
-                    (iteration as f32 / self.config.max_tool_iterations as f32) * 100.0
-                } else {
-                    0.0
-                };
-                let _ = tx.try_send(AgentEvent::status(pct, msg_count as u64, String::new()));
-            }
-
             // Call LLM
             let messages = {
                 let state = self.state.read();
@@ -656,17 +648,26 @@ impl RuntimeLoop {
                 extra_fields,
             };
 
-            // Emitir StatusUpdate con datos reales del LLM
+            // Acumular tokens de sesión y emitir StatusUpdate con el uso
+            // real de contexto (fracción 0.0–1.0 de la ventana del modelo).
             if let Some(ref tx) = self.event_tx {
-                let context_used = if response.usage.total_tokens > 0 {
-                    (response.usage.total_tokens as f32 / 128_000.0) * 100.0
+                let session_tokens = {
+                    let mut state = self.state.write();
+                    state.session_tokens = state
+                        .session_tokens
+                        .saturating_add(u64::from(response.usage.total_tokens));
+                    state.session_tokens
+                };
+                let window = self.config.context_window.max(1);
+                let context_used = if response.usage.prompt_tokens > 0 {
+                    (f64::from(response.usage.prompt_tokens) / f64::from(window)).min(1.0) as f32
                 } else {
                     0.0
                 };
                 let model = self.provider.config().model.clone();
                 let _ = tx.try_send(AgentEvent::StatusUpdate {
-                    context_used: context_used.min(100.0),
-                    total_tokens: response.usage.total_tokens as u64,
+                    context_used,
+                    total_tokens: session_tokens,
                     model,
                 });
             }

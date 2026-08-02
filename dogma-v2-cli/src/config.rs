@@ -31,6 +31,8 @@ pub struct DogmaConfig {
     /// Modelo de embeddings opcional (endpoint `/embeddings` del proveedor).
     /// Si es `None`, la búsqueda semántica queda deshabilitada.
     pub embedding_model: Option<String>,
+    /// Ventana de contexto del modelo en tokens (para el % de uso).
+    pub context_window: u32,
 }
 
 impl Default for DogmaConfig {
@@ -39,6 +41,7 @@ impl Default for DogmaConfig {
             provider: ProviderConfig::default(),
             max_tool_iterations: 50,
             embedding_model: None,
+            context_window: 128_000,
         }
     }
 }
@@ -68,6 +71,8 @@ struct ProviderSection {
 #[derive(Debug, Deserialize, Default)]
 struct RuntimeSection {
     max_tool_iterations: Option<u32>,
+    /// Ventana de contexto del modelo en tokens.
+    context_window: Option<u32>,
 }
 
 /// Obtiene el directorio home del usuario.
@@ -115,6 +120,10 @@ pub fn load_config(keys_path: Option<&Path>) -> Result<DogmaConfig, String> {
     let model = std::env::var("DOGMA_MODEL").ok();
     let api_key = std::env::var("DOGMA_API_KEY").ok();
     let embedding_model = std::env::var("DOGMA_EMBEDDING_MODEL").ok();
+    let context_window = std::env::var("DOGMA_CONTEXT_WINDOW")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(128_000);
 
     if let (Some(url), Some(mdl), Some(key)) = (&base_url, &model, &api_key) {
         return Ok(DogmaConfig {
@@ -126,6 +135,7 @@ pub fn load_config(keys_path: Option<&Path>) -> Result<DogmaConfig, String> {
             },
             max_tool_iterations: 50,
             embedding_model,
+            context_window,
         });
     }
 
@@ -151,8 +161,8 @@ pub fn load_config(keys_path: Option<&Path>) -> Result<DogmaConfig, String> {
     Err("No provider configuration found.\n\
          Create a keys.toml file with:\n\
          \n  [provider]\n  base_url = \"...\"\n  model = \"...\"\n  api_key = \"...\"\n\
-         \n  [runtime]\n  max_tool_iterations = 50\n\
-         \nOr set environment variables:\n  DOGMA_BASE_URL\n  DOGMA_MODEL\n  DOGMA_API_KEY"
+         \n  [runtime]\n  max_tool_iterations = 50\n  context_window = 128000\n\
+         \nOr set environment variables:\n  DOGMA_BASE_URL\n  DOGMA_MODEL\n  DOGMA_API_KEY\n  DOGMA_EMBEDDING_MODEL\n  DOGMA_CONTEXT_WINDOW"
         .to_string())
 }
 
@@ -170,6 +180,7 @@ fn load_from_toml_file(path: &Path) -> Option<DogmaConfig> {
         },
         max_tool_iterations: toml_config.runtime.max_tool_iterations.unwrap_or(50),
         embedding_model: toml_config.provider.embedding_model,
+        context_window: toml_config.runtime.context_window.unwrap_or(128_000),
     })
 }
 
