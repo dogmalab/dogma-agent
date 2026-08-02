@@ -19,8 +19,8 @@ pub mod tools;
 pub use models::memory::EnvironmentMemory;
 pub use models::plan::Plan;
 pub use runtime::cost_estimator::{
-    pricing_for, CostBreakdown, CostCalculable, CostDelta, CostEstimate, ModelPricing,
-    ProviderCost, ProviderRole,
+    CostBreakdown, CostCalculable, CostDelta, CostEstimate, ModelPricing, ProviderCost,
+    ProviderRole, pricing_for,
 };
 pub use runtime::cost_gate::{
     AlternativeProposal, AutoCostGate, CostDecision, CostGateImpl, CostProposal,
@@ -32,8 +32,8 @@ pub use runtime::enriched::{
 pub use runtime::loop_handle::RuntimeLoop;
 pub use runtime::provider::LLMProvider;
 pub use runtime::quality_estimator::{
-    tier_for, HeuristicQualityEstimator, ModelTier, QualityBasis, QualityCalculable,
-    QualityEstimate,
+    HeuristicQualityEstimator, ModelTier, QualityBasis, QualityCalculable, QualityEstimate,
+    tier_for,
 };
 pub use runtime::sub_agent::SubAgentManager;
 pub use runtime::wasm_sandbox::WasmSandbox;

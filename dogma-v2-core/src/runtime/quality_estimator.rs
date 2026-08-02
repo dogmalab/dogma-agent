@@ -51,7 +51,7 @@ pub trait QualityCalculable {
 }
 
 /// Tier classification for a model. Used by the heuristic baseline.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ModelTier {
     /// Frontier-tier-A: GPT-4o, Claude Opus, etc. Baseline 0.85.
@@ -86,7 +86,7 @@ impl HeuristicQualityEstimator {
 
     /// Builds an estimator for an N-proposer MoA run.
     #[must_use]
-    pub const fn moa(tiers: &[ModelTier]) -> Self {
+    pub fn moa(tiers: &[ModelTier]) -> Self {
         let strongest = tiers
             .iter()
             .min_by_key(|t| match t {
@@ -110,7 +110,7 @@ impl HeuristicQualityEstimator {
 
 impl QualityCalculable for HeuristicQualityEstimator {
     fn estimate_quality(&self) -> QualityEstimate {
-        let base = match self.strongest_model_tier {
+        let base: f32 = match self.strongest_model_tier {
             ModelTier::FrontierA => 0.85,
             ModelTier::FrontierB => 0.70,
             ModelTier::Mid => 0.55,
@@ -143,8 +143,8 @@ impl QualityCalculable for HeuristicQualityEstimator {
 #[must_use]
 pub fn tier_for(model: &str) -> ModelTier {
     let m = model.to_lowercase();
-    if m.starts_with("gpt-4o")
-        || m.starts_with("o1")
+    if (m.starts_with("gpt-4o") && !m.contains("mini"))
+        || (m.starts_with("o1") && !m.contains("mini"))
         || m.contains("opus")
         || m.contains("sonnet-4")
     {

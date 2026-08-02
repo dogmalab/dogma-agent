@@ -68,9 +68,9 @@ impl CostEstimate {
             min_cost_usd: self.min_cost_usd * factor,
             expected_cost_usd: self.expected_cost_usd * factor,
             max_cost_usd: self.max_cost_usd * factor,
-            input_tokens: (f64::from(self.input_tokens) * factor) as u64,
-            output_tokens: (f64::from(self.output_tokens) * factor) as u64,
-            wall_time_ms: (f64::from(self.wall_time_ms) * factor) as u64,
+            input_tokens: (self.input_tokens as f64 * factor) as u64,
+            output_tokens: (self.output_tokens as f64 * factor) as u64,
+            wall_time_ms: (self.wall_time_ms as f64 * factor) as u64,
         }
     }
 }
@@ -145,10 +145,8 @@ impl CostBreakdown {
             ProviderRole::Proposer => {
                 self.total_estimate = self.total_estimate.add(&cost.estimate);
                 if let Some(actual) = &cost.actual {
-                    let current_actual = self
-                        .total_actual
-                        .clone()
-                        .unwrap_or_else(CostEstimate::zero);
+                    let current_actual =
+                        self.total_actual.clone().unwrap_or_else(CostEstimate::zero);
                     self.total_actual = Some(current_actual.add(actual));
                 }
                 self.proposers.push(cost);
@@ -156,10 +154,8 @@ impl CostBreakdown {
             ProviderRole::Compiler => {
                 self.total_estimate = self.total_estimate.add(&cost.estimate);
                 if let Some(actual) = &cost.actual {
-                    let current_actual = self
-                        .total_actual
-                        .clone()
-                        .unwrap_or_else(CostEstimate::zero);
+                    let current_actual =
+                        self.total_actual.clone().unwrap_or_else(CostEstimate::zero);
                     self.total_actual = Some(current_actual.add(actual));
                 }
                 self.compiler = Some(cost);
@@ -167,10 +163,8 @@ impl CostBreakdown {
             ProviderRole::Verifier => {
                 self.total_estimate = self.total_estimate.add(&cost.estimate);
                 if let Some(actual) = &cost.actual {
-                    let current_actual = self
-                        .total_actual
-                        .clone()
-                        .unwrap_or_else(CostEstimate::zero);
+                    let current_actual =
+                        self.total_actual.clone().unwrap_or_else(CostEstimate::zero);
                     self.total_actual = Some(current_actual.add(actual));
                 }
                 self.verifiers.push(cost);
@@ -235,8 +229,8 @@ impl ModelPricing {
     /// Estima el costo en USD dado el conteo de tokens.
     #[must_use]
     pub fn estimate_usd(&self, input_tokens: u64, output_tokens: u64) -> f64 {
-        (f64::from(input_tokens) / 1000.0) * self.cost_per_1k_input_tokens
-            + (f64::from(output_tokens) / 1000.0) * self.cost_per_1k_output_tokens
+        (input_tokens as f64 / 1000.0) * self.cost_per_1k_input_tokens
+            + (output_tokens as f64 / 1000.0) * self.cost_per_1k_output_tokens
     }
 }
 

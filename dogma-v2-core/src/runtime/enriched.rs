@@ -33,19 +33,16 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
+use tracing::info;
 
 use super::cost_estimator::{
-    pricing_for, CostBreakdown, CostCalculable, CostEstimate, ModelPricing, ProviderCost,
-    ProviderRole,
+    CostBreakdown, CostCalculable, CostEstimate, ModelPricing, ProviderCost, ProviderRole,
+    pricing_for,
 };
 use super::cost_gate::{CostDecision, CostGateImpl, CostProposal};
-use super::quality_estimator::{
-    HeuristicQualityEstimator, QualityBasis, QualityCalculable, QualityEstimate,
-};
-use super::provider::{LLMProvider, LLMResponse, Message, MessageRole, ProviderConfig};
+use super::provider::{LLMProvider, Message, MessageRole};
+use super::quality_estimator::{HeuristicQualityEstimator, QualityCalculable, QualityEstimate};
 use crate::state::session::SessionManager;
 use dogma_v2_common::Result;
 use dogma_v2_common::error::Error as DogmaError;
@@ -90,10 +87,18 @@ impl Default for MoaConfig {
 }
 
 /// Configuration of the compiler LLM.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CompilerConfig {
     pub provider: Arc<dyn LLMProvider>,
     pub pricing: Option<ModelPricing>,
+}
+
+impl std::fmt::Debug for CompilerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompilerConfig")
+            .field("pricing", &self.pricing)
+            .finish_non_exhaustive()
+    }
 }
 
 impl CompilerConfig {
@@ -120,8 +125,8 @@ impl CostCalculable for MoaConfig {
         // compiler doing the same per iteration.
         let input_per_call = u64::from(self.max_input_tokens_per_proposer);
         let output_per_call = u64::from(self.max_output_tokens_per_proposer);
-        let n_calls = (self.n_proposers as u64) * (self.max_iterations as u64)
-            + (self.max_iterations as u64); // compiler per iter
+        let n_calls =
+            (self.n_proposers as u64) * (self.max_iterations as u64) + (self.max_iterations as u64); // compiler per iter
         let total_input = input_per_call * n_calls;
         let total_output = output_per_call * n_calls;
 
@@ -242,11 +247,7 @@ impl MoaLoop {
     ) -> ProviderCost {
         let cfg = provider.config();
         let pricing = pricing_for(&cfg.model);
-        let iters = if matches!(role, ProviderRole::Proposer) {
-            self.config.max_iterations
-        } else {
-            self.config.max_iterations
-        };
+        let iters = self.config.max_iterations;
         let calls = if matches!(role, ProviderRole::Proposer) {
             self.config.n_proposers
         } else {
@@ -341,7 +342,12 @@ impl MoaLoop {
 
             // Phase 2: compiler synthesizes
             let compiled = self
-                .run_compiler(&current_query, &proposer_responses, iter_idx, &mut final_breakdown)
+                .run_compiler(
+                    &current_query,
+                    &proposer_responses,
+                    iter_idx,
+                    &mut final_breakdown,
+                )
                 .await?;
 
             // Persist the compiled response
@@ -412,13 +418,12 @@ impl MoaLoop {
                 .map_err(|e| DogmaError::Internal(format!("proposer join error: {e}")))?;
             let mut resp = resp?;
             resp.iteration = iter_idx;
-            // Record in breakdown (rough estimate; the actual
-            // would be the real token count).
-            if let Some(pc) = self.estimate_provider_cost_for_response(&responses) {
-                let _ = pc;
-            }
             breakdown.add(ProviderCost {
-                provider: self.proposers.get(i).map(|p| p.config().base_url.clone()).unwrap_or_default(),
+                provider: self
+                    .proposers
+                    .get(i)
+                    .map(|p| p.config().base_url.clone())
+                    .unwrap_or_default(),
                 model: resp.model.clone(),
                 role: ProviderRole::Proposer,
                 estimate: CostEstimate {
@@ -434,11 +439,6 @@ impl MoaLoop {
             responses.push(resp);
         }
         Ok(responses)
-    }
-
-    fn estimate_provider_cost_for_response(&self, _responses: &[MoaResponse]) -> Option<()> {
-        // Helper reserved for future actual-cost tracking.
-        Some(())
     }
 
     async fn run_compiler(
@@ -459,9 +459,9 @@ impl MoaLoop {
         let pricing = pricing_for(&self.compiler.config().model);
         let input_tokens = resp.usage.prompt_tokens;
         let output_tokens = resp.usage.completion_tokens;
-        let usd = pricing
-            .as_ref()
-            .map_or(0.0, |p| p.estimate_usd(u64::from(input_tokens), u64::from(output_tokens)));
+        let usd = pricing.as_ref().map_or(0.0, |p| {
+            p.estimate_usd(u64::from(input_tokens), u64::from(output_tokens))
+        });
 
         breakdown.add(ProviderCost {
             provider: self.compiler.config().base_url.clone(),
@@ -498,16 +498,18 @@ impl MoaLoop {
         config: &str,
         decision: &CostDecision,
     ) -> Result<()> {
-        let Some(session) = &self.session else { return Ok(()) };
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
         let session_id = query_session_id(query);
         let node = Document::builder(
-            &format!("cost-proposal-{}", uuid::Uuid::new_v4()),
+            format!("cost-proposal-{}", uuid::Uuid::new_v4()),
             format!("Cost proposal: {config}"),
         )
         .metadata("node_type", "CostProposal")
         .metadata("session_id", &session_id)
-        .metadata("decision", &decision.to_string())
-        .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+        .metadata("decision", decision.to_string())
+        .metadata("created_at", chrono::Utc::now().to_rfc3339())
         .build();
         let _ = session.write().persist_node(node);
         Ok(())
@@ -519,10 +521,12 @@ impl MoaLoop {
         proposers: &[MoaResponse],
         compiled: Option<&MoaResponse>,
     ) -> Result<()> {
-        let Some(session) = &self.session else { return Ok(()) };
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
         for resp in proposers {
             let node = Document::builder(
-                &format!("moa-proposer-{iter_idx}-{}", uuid::Uuid::new_v4()),
+                format!("moa-proposer-{iter_idx}-{}", uuid::Uuid::new_v4()),
                 &resp.content,
             )
             .metadata("node_type", "MoAProposer")
@@ -531,13 +535,13 @@ impl MoaLoop {
             .metadata("role", "proposer")
             .metadata("input_tokens", resp.input_tokens.to_string())
             .metadata("output_tokens", resp.output_tokens.to_string())
-            .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+            .metadata("created_at", chrono::Utc::now().to_rfc3339())
             .build();
             let _ = session.write().persist_node(node);
         }
         if let Some(c) = compiled {
             let node = Document::builder(
-                &format!("moa-compiler-{iter_idx}-{}", uuid::Uuid::new_v4()),
+                format!("moa-compiler-{iter_idx}-{}", uuid::Uuid::new_v4()),
                 &c.content,
             )
             .metadata("node_type", "MoACompiler")
@@ -546,7 +550,7 @@ impl MoaLoop {
             .metadata("role", "compiler")
             .metadata("input_tokens", c.input_tokens.to_string())
             .metadata("output_tokens", c.output_tokens.to_string())
-            .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+            .metadata("created_at", chrono::Utc::now().to_rfc3339())
             .build();
             let _ = session.write().persist_node(node);
         }
@@ -558,9 +562,11 @@ impl MoaLoop {
         breakdown: &CostBreakdown,
         wall_time_ms: u64,
     ) -> Result<()> {
-        let Some(session) = &self.session else { return Ok(()) };
+        let Some(session) = &self.session else {
+            return Ok(());
+        };
         let node = Document::builder(
-            &format!("cost-actual-{}", uuid::Uuid::new_v4()),
+            format!("cost-actual-{}", uuid::Uuid::new_v4()),
             format!(
                 "Total wall: {wall_time_ms}ms; providers: {}",
                 breakdown.proposers.len()
@@ -568,7 +574,7 @@ impl MoaLoop {
         )
         .metadata("node_type", "CostActual")
         .metadata("wall_time_ms", wall_time_ms.to_string())
-        .metadata("created_at", &chrono::Utc::now().to_rfc3339())
+        .metadata("created_at", chrono::Utc::now().to_rfc3339())
         .build();
         let _ = session.write().persist_node(node);
         Ok(())
@@ -593,9 +599,7 @@ const COMPILER_SYSTEM_PROMPT: &str = "\
 
 fn build_synthesis_prompt(query: &str, proposers: &[MoaResponse], iter_idx: usize) -> String {
     let mut s = String::new();
-    s.push_str(&format!(
-        "Original query:\n<query>\n{query}\n</query>\n\n"
-    ));
+    s.push_str(&format!("Original query:\n<query>\n{query}\n</query>\n\n"));
     s.push_str(&format!(
         "{n} candidate responses (iteration {iter}):\n\n",
         n = proposers.len(),

@@ -227,7 +227,7 @@ enum Choice {
 
 fn render_proposal_prompt(proposal: &CostProposal) -> String {
     let mut s = String::new();
-    s.push_str(&format!("\n─── Cost Gate ───\n"));
+    s.push_str("\n─── Cost Gate ───\n");
     s.push_str(&format!("Operation: {}\n", proposal.operation));
     s.push_str(&format!("Estimate:  {}\n", proposal.estimate));
     s.push_str(&format!("Config:    {}\n", proposal.proposed_config));
