@@ -170,7 +170,10 @@ fn load_project_rules(cwd: &Path) -> Option<String> {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 // Limitar a 2000 chars para no saturar el prompt
                 let truncated = if content.len() > 2000 {
-                    format!("{}...(truncated)", &content[..2000])
+                    format!(
+                        "{}...(truncated)",
+                        dogma_v2_common::truncate_utf8(&content, 2000)
+                    )
                 } else {
                     content
                 };

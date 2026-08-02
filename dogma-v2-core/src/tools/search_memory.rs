@@ -146,7 +146,8 @@ impl SearchMemoryTool {
         for (i, (hybrid_score, m)) in scored.iter().enumerate() {
             let label = match m.created_at.as_deref().unwrap_or("unknown") {
                 ts if ts.len() >= 10 => {
-                    format!("[{}] #{}, score={:.2}", &ts[..10], i + 1, hybrid_score)
+                    let idx = dogma_v2_common::truncate_utf8(ts, 10);
+                    format!("[{}] #{}, score={:.2}", idx, i + 1, hybrid_score)
                 }
                 ts => format!("[{}] #{}, score={:.2}", ts, i + 1, hybrid_score),
             };
@@ -157,7 +158,7 @@ impl SearchMemoryTool {
             if output.len() + entry.len() > max_chars {
                 let remaining = max_chars.saturating_sub(output.len());
                 if remaining > 20 {
-                    let truncated = &m.content[..remaining.min(m.content.len())];
+                    let truncated = dogma_v2_common::truncate_utf8(&m.content, remaining);
                     output.push_str(&format!("{label}\n{truncated}…\n\n"));
                 }
                 output.push_str(&format!("[… truncated at {} character limit]\n", max_chars));

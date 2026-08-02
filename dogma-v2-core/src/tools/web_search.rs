@@ -89,11 +89,7 @@ impl Tool for WebSearchTool {
                 .chars()
                 .take(300)
                 .collect::<String>();
-            return Err(format_exa_error(
-                "search",
-                status.as_u16(),
-                &body,
-            ));
+            return Err(format_exa_error("search", status.as_u16(), &body));
         }
 
         let data: Value = response
@@ -137,8 +133,12 @@ impl Tool for WebSearchTool {
 /// Formatea errores de la API Exa con mensajes amigables según el código HTTP.
 fn format_exa_error(op: &str, status: u16, body: &str) -> String {
     match status {
-        0 => format!("Exa {op} failed: network/timeout error. Check internet and EXA_API_KEY. Details: {body}"),
-        401 | 403 => format!("Exa {op} failed: invalid or expired API key. Set a valid EXA_API_KEY in your environment. (HTTP {status})"),
+        0 => format!(
+            "Exa {op} failed: network/timeout error. Check internet and EXA_API_KEY. Details: {body}"
+        ),
+        401 | 403 => format!(
+            "Exa {op} failed: invalid or expired API key. Set a valid EXA_API_KEY in your environment. (HTTP {status})"
+        ),
         429 => format!("Exa {op} failed: rate limited. Wait a moment and retry. (HTTP 429)"),
         _ => format!("Exa {op} error (HTTP {status}): {body}"),
     }

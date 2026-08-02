@@ -22,6 +22,11 @@ use crate::state::compressor::SemanticMatch;
 use dogma_vdb::embedding::Embedder;
 use tracing::{debug, info};
 
+/// Trunca un query para logs sin cortar un carácter UTF-8 a la mitad.
+fn truncate_query(s: &str) -> &str {
+    dogma_v2_common::truncate_utf8(s, 50)
+}
+
 /// Configuración del context manager.
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
@@ -115,7 +120,7 @@ impl ContextManager {
         info!(
             "Context manager: {} relevant messages found for query '{}'",
             relevant.len(),
-            &current_query[..current_query.len().min(50)]
+            truncate_query(current_query)
         );
 
         Ok(relevant)
@@ -142,10 +147,11 @@ impl ContextManager {
         let mut context = String::from("Relevant context from past conversations:\n\n");
         for (i, m) in matches.iter().enumerate() {
             let preview: String = m.content.chars().take(200).collect();
+            let session_preview = dogma_v2_common::truncate_utf8(&m.session_id, 20);
             context.push_str(&format!(
                 "[{}] (session: {}, score: {:.2})\n{}\n\n",
                 i + 1,
-                &m.session_id[..m.session_id.len().min(20)],
+                session_preview,
                 m.score,
                 preview,
             ));

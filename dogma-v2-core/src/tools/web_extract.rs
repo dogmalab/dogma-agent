@@ -125,9 +125,14 @@ impl Tool for WebExtractTool {
 
 fn format_extract_error(status: u16, body: &str) -> String {
     match status {
-        0 => format!("Exa content extraction failed: network/timeout error. Check internet and EXA_API_KEY. Details: {body}"),
-        401 | 403 => format!("Exa content extraction failed: invalid or expired API key. Set a valid EXA_API_KEY. (HTTP {status})"),
-        429 => format!("Exa content extraction failed: rate limited. Wait a moment and retry. (HTTP 429)"),
+        0 => format!(
+            "Exa content extraction failed: network/timeout error. Check internet and EXA_API_KEY. Details: {body}"
+        ),
+        401 | 403 => format!(
+            "Exa content extraction failed: invalid or expired API key. Set a valid EXA_API_KEY. (HTTP {status})"
+        ),
+        429 => "Exa content extraction failed: rate limited. Wait a moment and retry. (HTTP 429)"
+            .to_string(),
         _ => format!("Exa content extraction error (HTTP {status}): {body}"),
     }
 }

@@ -161,13 +161,13 @@ pub struct SemanticMatch {
     pub parent_id: Option<String>,
 }
 
-/// Trunca un string a un máximo de caracteres, añadiendo "..." si
-/// es necesario.
+/// Trunca un string a un máximo de bytes, añadiendo "..." si
+/// es necesario. Seguro con UTF-8 (no corta en medio de un char).
 fn truncate(s: &str, max_chars: usize) -> String {
     if s.len() <= max_chars {
         s.to_string()
     } else {
-        format!("{}...", &s[..max_chars])
+        format!("{}...", dogma_v2_common::truncate_utf8(s, max_chars))
     }
 }
 

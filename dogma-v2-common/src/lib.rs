@@ -9,6 +9,8 @@
 
 pub mod error;
 pub mod event;
+pub mod text;
 
 pub use error::{Error, Result};
 pub use event::{Event, EventSeverity};
+pub use text::truncate_utf8;

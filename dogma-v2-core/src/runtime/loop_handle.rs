@@ -282,11 +282,7 @@ impl RuntimeLoop {
             .rev()
             .find(|m| m.role == MessageRole::Tool && !m.content.is_empty())
         {
-            let preview = if tr.content.len() > 200 {
-                &tr.content[..200]
-            } else {
-                &tr.content
-            };
+            let preview = dogma_v2_common::truncate_utf8(&tr.content, 200);
             continuity.push_str(&format!("Last tool result: {preview}\n"));
         }
 
@@ -297,11 +293,7 @@ impl RuntimeLoop {
             .rev()
             .find(|m| m.content.contains("[error]") || m.content.contains("Error:"))
         {
-            let preview = if err.content.len() > 200 {
-                &err.content[..200]
-            } else {
-                &err.content
-            };
+            let preview = dogma_v2_common::truncate_utf8(&err.content, 200);
             continuity.push_str(&format!("Last error: {preview}\n"));
         }
 
@@ -416,12 +408,12 @@ impl RuntimeLoop {
                 ctx.push_str(&m.content);
                 ctx.push_str("\n\n");
             } else {
-                let preview_len = m.content.len().min(300);
+                let preview = dogma_v2_common::truncate_utf8(&m.content, 300);
                 ctx.push_str(&format!(
                     "[{i}] (session: {}, score: {:.2})\n{}\n\n",
-                    &m.session_id[..m.session_id.len().min(20)],
+                    dogma_v2_common::truncate_utf8(&m.session_id, 20),
                     m.score,
-                    &m.content[..preview_len],
+                    preview,
                 ));
             }
         }
@@ -506,16 +498,19 @@ impl RuntimeLoop {
             self.state.read().messages.len() - 1
         );
 
-        // Persist user message in session
+        // Persist user message in session (best-effort: un fallo de storage
+        // no debe abortar la ejecución — la conversación vive en memoria).
         {
             let mut session = self.session.write();
-            session.append_message(session_id, MessageRole::User, prompt, &[])?;
+            if let Err(e) = session.append_message(session_id, MessageRole::User, prompt, &[]) {
+                warn!("Failed to persist user message: {e}");
+            }
             let _ = session.embed_pending_messages(session_id);
         }
 
         let result = self.tool_loop(session_id).await;
 
-        // Persist final result
+        // Persist final result (best-effort)
         if let Ok(ref final_content) = result {
             let extra = {
                 let state = self.state.read();
@@ -526,7 +521,11 @@ impl RuntimeLoop {
                     .unwrap_or_default()
             };
             let mut session = self.session.write();
-            session.append_message(session_id, MessageRole::Assistant, final_content, &extra)?;
+            if let Err(e) =
+                session.append_message(session_id, MessageRole::Assistant, final_content, &extra)
+            {
+                warn!("Failed to persist final assistant message: {e}");
+            }
             let _ = session.embed_pending_messages(session_id);
         }
 
@@ -672,15 +671,17 @@ impl RuntimeLoop {
                 });
             }
 
-            // Persist assistant response
+            // Persist assistant response (best-effort)
             {
                 let mut session = self.session.write();
-                session.append_message(
+                if let Err(e) = session.append_message(
                     session_id,
                     MessageRole::Assistant,
                     &response.content,
                     &response.extra_fields,
-                )?;
+                ) {
+                    warn!("Failed to persist assistant message: {e}");
+                }
             }
 
             // If no tool calls, we're done
@@ -738,10 +739,14 @@ impl RuntimeLoop {
                     }
                 };
 
-                // Persist tool result under session lock
+                // Persist tool result under session lock (best-effort)
                 {
                     let mut session = self.session.write();
-                    session.append_tool_result(session_id, &tc.name, &tc.id, &tool_result)?;
+                    if let Err(e) =
+                        session.append_tool_result(session_id, &tc.name, &tc.id, &tool_result)
+                    {
+                        warn!("Failed to persist tool result: {e}");
+                    }
                 }
 
                 // Add result to local state
@@ -807,5 +812,23 @@ mod tests {
         let config = LoopConfig::default();
         assert_eq!(config.max_tool_iterations, 25);
         assert!(config.context_compression);
+    }
+
+    #[test]
+    fn test_truncate_utf8_no_panic_on_multibyte() {
+        // Contenido con caracteres multi-byte (emojis + acentos).
+        let s = "ñandú 🦜 cacatúa éàîôü";
+        // Truncar en cualquier byte dentro del string no debe paniquear.
+        for i in 0..=s.len() {
+            let _ = dogma_v2_common::truncate_utf8(s, i);
+        }
+        // El resultado siempre es un prefijo válido y ≤ max_bytes.
+        let t = dogma_v2_common::truncate_utf8(s, 10);
+        assert!(s.starts_with(t));
+        assert!(t.len() <= 10);
+        // ASCII se trunca exacto.
+        assert_eq!(dogma_v2_common::truncate_utf8("hello world", 5), "hello");
+        // s corto se devuelve completo.
+        assert_eq!(dogma_v2_common::truncate_utf8("hi", 200), "hi");
     }
 }
