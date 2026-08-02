@@ -12,3 +12,4 @@ pub mod context_manager;
 pub mod session;
 pub mod system_context;
 pub mod user_memory;
+pub mod workspace;

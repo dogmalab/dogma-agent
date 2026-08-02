@@ -46,19 +46,28 @@ use dogma_v2_common::Result;
 use dogma_v2_common::event::{Event, EventSeverity, EventType};
 use dogma_v2_core::RuntimeLoop;
 use dogma_v2_core::models::delegation::{AgentRole, SubAgentConfig};
+use dogma_v2_core::models::events::AgentEvent;
+use dogma_v2_core::models::plan::Plan;
 use dogma_v2_core::runtime::cost_gate::{AutoCostGate, CostGateImpl, InteractiveCostGate, TrustedCostGate};
 use dogma_v2_core::runtime::enriched::{MoaConfig, MoaLoop};
 use dogma_v2_core::runtime::loop_handle::LoopConfig;
+use dogma_v2_core::runtime::provider::embedder::HttpEmbedder;
 use dogma_v2_core::runtime::provider::openai::OpenAiProvider;
 use dogma_v2_core::runtime::provider::ProviderConfig;
+use dogma_v2_core::runtime::provider::{LLMProvider, Message, MessageRole};
 use dogma_v2_core::runtime::sub_agent::SubAgentManager;
 use dogma_v2_core::state::session::SessionManager;
+use dogma_v2_core::state::user_memory::UserMemory;
+use dogma_v2_core::state::workspace::{WorkspaceIndexer, open_workspace_collection};
 use dogma_v2_core::tools::DelegateTaskTool;
 use dogma_v2_core::tools::InstallSkillTool;
 use dogma_v2_core::tools::PlanTool;
 use dogma_v2_core::tools::SearchMemoryTool;
+use dogma_v2_core::tools::UpdateUserMemoryTool;
 use dogma_v2_core::tools::create_survival_tools;
 use dogma_v2_core::tools::{SandboxMode, SecurityConfig, SecurityMode, ToolGuardrail};
+use parking_lot::RwLock;
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
 mod config;
@@ -81,6 +90,10 @@ struct Cli {
     #[arg(long, default_value = "disabled")]
     sandbox_mode: String,
 
+    /// Reanuda una sesión existente por su ID en vez de crear una nueva.
+    #[arg(long, global = true)]
+    session: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -102,7 +115,7 @@ enum Commands {
         initial_prompt: Option<String>,
     },
 
-    /// Inicia el modo estructurado de planificación.
+    /// Genera un plan estructurado de tareas con el LLM y lo persiste.
     Plan {
         /// Descripción de la tarea a planificar.
         task: String,
@@ -125,6 +138,16 @@ enum Commands {
         /// Modo del Cost Gate: interactive, auto, trusted.
         #[arg(long, default_value = "interactive")]
         gate: String,
+    },
+
+    /// Lista las sesiones existentes.
+    Sessions,
+
+    /// Indexa el workspace actual (o la ruta dada) con SML en workspace.vdb.
+    Index {
+        /// Ruta raíz a indexar (por defecto el directorio actual).
+        #[arg(long)]
+        path: Option<String>,
     },
 
     /// Exporta datos de sesiones a JSONL para inspección/debug.
@@ -174,9 +197,25 @@ async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Commands::Init => cmd_init(&data_dir, cli.json, sandbox_mode).await,
-        Commands::Chat { prompt } => cmd_chat(&data_dir, &prompt, cli.json, sandbox_mode).await,
+        Commands::Chat { prompt } => {
+            cmd_chat(
+                &data_dir,
+                &prompt,
+                cli.json,
+                sandbox_mode,
+                cli.session.as_deref(),
+            )
+            .await
+        }
         Commands::Interactive { initial_prompt } => {
-            cmd_interactive(&data_dir, initial_prompt.as_deref(), cli.json, sandbox_mode).await
+            cmd_interactive(
+                &data_dir,
+                initial_prompt.as_deref(),
+                cli.json,
+                sandbox_mode,
+                cli.session.as_deref(),
+            )
+            .await
         }
         Commands::Plan { task } => cmd_plan(&data_dir, &task, cli.json, sandbox_mode).await,
         Commands::EnrichedInference {
@@ -197,6 +236,8 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await
         }
+        Commands::Sessions => cmd_sessions(&data_dir).await,
+        Commands::Index { path } => cmd_index(&data_dir, path.as_deref()).await,
         Commands::Export { output } => cmd_export(&data_dir, &output).await,
     }
 }
@@ -274,6 +315,7 @@ async fn cmd_chat(
     prompt: &str,
     json_mode: bool,
     sandbox_mode: SandboxMode,
+    resume_session: Option<&str>,
 ) -> Result<()> {
     emit_event(
         json_mode,
@@ -284,15 +326,12 @@ async fn cmd_chat(
         ),
     );
 
-    // ── 1. Cargar configuración del proveedor ──────────────────────
     let dogma_config =
         config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
-    // ── 2. Crear proveedor LLM ─────────────────────────────────────
-    let provider = Arc::new(OpenAiProvider::new(dogma_config.provider)?);
 
-    // ── 3. Inicializar sesión ──────────────────────────────────────
-    let mut session = SessionManager::open(data_dir)?;
-    let session_id = session.create_session("dogma-v2")?;
+    let bundle = setup_runtime(data_dir, &dogma_config, sandbox_mode, resume_session, None).await?;
+
+    let session_id = bundle.session_id;
 
     emit_event(
         json_mode,
@@ -304,62 +343,8 @@ async fn cmd_chat(
         .with_session_id(&session_id),
     );
 
-    // ── 4. Inicializar seguridad ─────────────────────────────────────
-    ToolGuardrail::init(SecurityConfig {
-        mode: SecurityMode::SemiAutonomous,
-        allowed_dirs: vec![
-            data_dir.clone(),
-            std::env::current_dir().unwrap_or_default(),
-        ],
-        sandbox_mode,
-        sandbox_limits: None,
-    });
+    let response = bundle.runtime.run(prompt, &session_id).await?;
 
-    // ── 5. Crear herramientas de supervivencia ─────────────────────
-    let tools = create_survival_tools();
-
-    // ── 6. Crear y ejecutar el RuntimeLoop ─────────────────────────
-    let loop_config = LoopConfig::default();
-    let runtime = Arc::new(RuntimeLoop::new(
-        provider.clone(),
-        tools,
-        session,
-        loop_config,
-        None,
-    ));
-
-    // Registrar herramienta de búsqueda semántica activa
-    let memory_search = SearchMemoryTool::new(runtime.session_handle());
-    runtime.register_tool(Box::new(memory_search));
-
-    // Registrar herramienta de planificación
-    let plan_tool = PlanTool::new(runtime.session_handle());
-    runtime.register_tool(Box::new(plan_tool));
-
-    // Registrar herramienta de instalación de skills dinámicos
-    match InstallSkillTool::new(provider.clone(), data_dir) {
-        Ok(skill_tool) => {
-            runtime.register_tool(Box::new(skill_tool));
-            info!("InstallSkillTool registered");
-        }
-        Err(e) => warn!("Failed to register InstallSkillTool: {e}"),
-    }
-
-    // Registrar herramienta de delegación a subagentes efímeros
-    let subagent_config = SubAgentConfig {
-        role: AgentRole::Orchestrator,
-        max_spawn_depth: 2,
-        max_iterations: 5,
-        ..SubAgentConfig::default()
-    };
-    let subagent_mgr = SubAgentManager::new(Arc::clone(&runtime), subagent_config);
-    let delegate_tool = DelegateTaskTool::new(Arc::new(subagent_mgr));
-    runtime.register_tool(Box::new(delegate_tool));
-    info!("DelegateTaskTool registered");
-
-    let response = runtime.run(prompt, &session_id).await?;
-
-    // ── 6. Emitir resultado ────────────────────────────────────────
     emit_event(
         json_mode,
         &Event::new(EventType::Message, EventSeverity::Success, &response)
@@ -385,7 +370,192 @@ async fn cmd_chat(
     Ok(())
 }
 
-/// Inicia el modo estructurado de planificación.
+/// Bundle de runtime completo: loop + sesión activa.
+struct RuntimeBundle {
+    runtime: Arc<RuntimeLoop>,
+    session_id: String,
+}
+
+/// Construye el runtime con todas las herramientas, memoria de usuario,
+/// workspace indexado (SML) y sesión (nueva o reanudada).
+///
+/// Herramientas registradas:
+/// - Siempre: read_file, write_file, execute_script, search_memory,
+///   update_user_memory, plan, delegate_task
+/// - Con skills.sh: install_skill
+/// - Con `EXA_API_KEY`: web_search, web_extract
+async fn setup_runtime(
+    data_dir: &PathBuf,
+    config: &config::DogmaConfig,
+    sandbox_mode: SandboxMode,
+    resume_session: Option<&str>,
+    event_tx: Option<mpsc::Sender<AgentEvent>>,
+) -> Result<RuntimeBundle> {
+    // ── 1. Proveedor LLM ────────────────────────────────────────────
+    let provider = Arc::new(OpenAiProvider::new(config.provider.clone())?);
+
+    // ── 2. Embedder opcional (búsqueda semántica) ───────────────────
+    let embedder: Option<Arc<dyn dogma_vdb::embedding::Embedder>> =
+        HttpEmbedder::build_optional(&config.provider, config.embedding_model.as_deref())
+            .map(|e| Arc::new(e) as Arc<dyn dogma_vdb::embedding::Embedder>);
+
+    // ── 3. Session manager + sesión (nueva o reanudada) ─────────────
+    let mut session = SessionManager::open(data_dir)?;
+    if let Some(e) = embedder.as_ref() {
+        session = session.with_embedder(Arc::clone(e));
+    }
+
+    let session_id = match resume_session {
+        Some(id) => {
+            if !session_exists(&session, id) {
+                return Err(dogma_v2_common::error::Error::Validation(format!(
+                    "session not found: {id}. List with `dogma sessions`."
+                )));
+            }
+            id.to_string()
+        }
+        None => session.create_session(&config.provider.model)?,
+    };
+
+    // Plan activo si reanudamos una sesión con plan persistido
+    let active_plan: Option<Plan> = if resume_session.is_some() {
+        session
+            .get_plans(&session_id)
+            .unwrap_or_default()
+            .into_iter()
+            .next()
+    } else {
+        None
+    };
+
+    // ── 4. Seguridad ────────────────────────────────────────────────
+    ToolGuardrail::init(SecurityConfig {
+        mode: SecurityMode::SemiAutonomous,
+        allowed_dirs: vec![
+            data_dir.clone(),
+            std::env::current_dir().unwrap_or_default(),
+        ],
+        sandbox_mode,
+        sandbox_limits: None,
+    });
+
+    // ── 5. Workspace collection (SML) ───────────────────────────────
+    let workspace = match &embedder {
+        Some(e) => {
+            let mut col = open_workspace_collection(data_dir)?;
+            if col.is_empty() {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                info!(
+                    "Indexing workspace at {} (first run) — run `dogma index` to refresh",
+                    cwd.display()
+                );
+                let indexer = WorkspaceIndexer::new(Arc::clone(e));
+                indexer.index_dir(&cwd, &mut col);
+            }
+            Some(Arc::new(RwLock::new(col)))
+        }
+        None => {
+            warn!("No embedding model configured — semantic search and workspace context disabled");
+            None
+        }
+    };
+
+    // ── 6. User memory ──────────────────────────────────────────────
+    let user_memory = Arc::new(RwLock::new(UserMemory::open(
+        &data_dir.join("user_memory.vdb"),
+    )?));
+    let user_memory_handle = Arc::clone(&user_memory);
+
+    // ── 7. RuntimeLoop ──────────────────────────────────────────────
+    let loop_config = LoopConfig {
+        max_tool_iterations: config.max_tool_iterations,
+        ..LoopConfig::default()
+    };
+
+    let mut runtime = RuntimeLoop::new(
+        provider.clone(),
+        create_survival_tools(),
+        session,
+        loop_config,
+        event_tx,
+    );
+
+    if let Some(plan) = active_plan {
+        runtime.set_active_plan(plan);
+    }
+
+    runtime = runtime.with_user_memory(user_memory);
+    if let Some(ws) = workspace {
+        runtime = runtime.with_workspace_collection(ws);
+    }
+
+    let runtime = Arc::new(runtime);
+
+    // ── 8. Registrar tools condicionales ────────────────────────────
+    let memory_search = SearchMemoryTool::new(runtime.session_handle());
+    runtime.register_tool(Box::new(memory_search));
+
+    let plan_tool = PlanTool::new(runtime.session_handle());
+    runtime.register_tool(Box::new(plan_tool));
+
+    let um_tool = UpdateUserMemoryTool::new(user_memory_handle);
+    runtime.register_tool(Box::new(um_tool));
+    info!("UpdateUserMemoryTool registered");
+
+    match InstallSkillTool::new(provider.clone(), data_dir) {
+        Ok(skill_tool) => {
+            runtime.register_tool(Box::new(skill_tool));
+            info!("InstallSkillTool registered");
+        }
+        Err(e) => warn!("Failed to register InstallSkillTool: {e}"),
+    }
+
+    let subagent_config = SubAgentConfig {
+        role: AgentRole::Orchestrator,
+        max_spawn_depth: 2,
+        max_iterations: 5,
+        ..SubAgentConfig::default()
+    };
+    let subagent_mgr = SubAgentManager::new(Arc::clone(&runtime), subagent_config);
+    let delegate_tool = DelegateTaskTool::new(Arc::new(subagent_mgr));
+    runtime.register_tool(Box::new(delegate_tool));
+    info!("DelegateTaskTool registered");
+
+    if let Ok(api_key) = std::env::var("EXA_API_KEY") {
+        if !api_key.is_empty() {
+            runtime.register_tool(Box::new(dogma_v2_core::tools::WebSearchTool::new(
+                api_key.clone(),
+            )));
+            runtime.register_tool(Box::new(dogma_v2_core::tools::WebExtractTool::new(api_key)));
+            info!("Web tools registered (EXA_API_KEY present)");
+        }
+    }
+
+    Ok(RuntimeBundle {
+        runtime,
+        session_id,
+    })
+}
+
+/// Comprueba si una sesión existe (tiene nodo raíz `Session`).
+fn session_exists(session: &SessionManager, id: &str) -> bool {
+    session
+        .get_session_nodes(id)
+        .map(|nodes| {
+            nodes
+                .iter()
+                .any(|d| d.metadata_val("node_type") == Some("Session"))
+        })
+        .unwrap_or(false)
+}
+
+/// Prompt del planificador: fuerza salida JSON con los pasos.
+const PLAN_SYSTEM_PROMPT: &str = "You are a meticulous planning assistant. \
+Given a task, break it into 3-8 clear, actionable, sequential steps. \
+Return ONLY a JSON object with a \"steps\" array of strings, \
+e.g. {\"steps\": [\"step one\", \"step two\"]}. No prose, no markdown.";
+
+/// Inicia el modo estructurado de planificación con el LLM real.
 async fn cmd_plan(
     data_dir: &PathBuf,
     task: &str,
@@ -397,10 +567,13 @@ async fn cmd_plan(
         &Event::new(EventType::System, EventSeverity::Info, "Starting plan mode"),
     );
 
+    let dogma_config =
+        config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
+    let provider = Arc::new(OpenAiProvider::new(dogma_config.provider.clone())?);
+
     let mut session = SessionManager::open(data_dir)?;
     let session_id = session.create_session("dogma-v2-planner")?;
 
-    // Inicializar seguridad
     ToolGuardrail::init(SecurityConfig {
         mode: SecurityMode::SemiAutonomous,
         allowed_dirs: vec![
@@ -421,26 +594,47 @@ async fn cmd_plan(
         .with_session_id(&session_id),
     );
 
-    // Placeholder: el planificador real vendrá en una fase posterior
-    let plan = format!(
-        "Plan for: {task}\n\
-         ─────────────────────────\n\
-         1. Analyze requirements\n\
-         2. Design solution\n\
-         3. Implement\n\
-         4. Test & verify\n\
-         ─────────────────────────\n\
-         Status: Planning phase initialized."
+    // ── Generar plan con el LLM ────────────────────────────────────
+    let messages = vec![
+        Message::new(MessageRole::System, PLAN_SYSTEM_PROMPT),
+        Message::new(MessageRole::User, task),
+    ];
+
+    let response = provider.chat(&messages, &[]).await?;
+    let steps = parse_plan_steps(&response.content);
+
+    if steps.is_empty() {
+        return Err(dogma_v2_common::error::Error::Internal(format!(
+            "LLM returned no plan steps for task: {task}"
+        )));
+    }
+
+    let plan = Plan::new(task, &steps);
+    session.save_plan(&session_id, &plan)?;
+
+    let plan_text = plan.format_display();
+
+    emit_event(
+        json_mode,
+        &Event::new(EventType::PlanProgress, EventSeverity::Success, &plan_text)
+            .with_session_id(&session_id)
+            .with_metadata("plan_id", &plan.id),
     );
 
     emit_event(
         json_mode,
-        &Event::new(EventType::PlanProgress, EventSeverity::Success, &plan)
-            .with_session_id(&session_id),
+        &Event::new(
+            EventType::Done,
+            EventSeverity::Success,
+            format!("Plan saved to session {session_id}"),
+        )
+        .with_session_id(&session_id),
     );
 
     if !json_mode {
-        println!("{plan}");
+        println!("{plan_text}");
+        println!();
+        println!("Session: {session_id}");
     }
 
     Ok(())
@@ -556,6 +750,126 @@ async fn cmd_enriched_inference(
     Ok(())
 }
 
+/// Extrae los pasos del plan de la respuesta del LLM.
+///
+/// Intenta parsear JSON `{"steps": [...]}`; si falla, parsea líneas
+/// numeradas o bullet points.
+fn parse_plan_steps(content: &str) -> Vec<String> {
+    // Intento 1: JSON
+    if let Some(start) = content.find('{') {
+        if let Some(end) = content.rfind('}') {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content[start..=end]) {
+                if let Some(arr) = value.get("steps").and_then(serde_json::Value::as_array) {
+                    let steps: Vec<String> = arr
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                    if !steps.is_empty() {
+                        return steps;
+                    }
+                }
+            }
+        }
+    }
+
+    // Intento 2: líneas numeradas / bullets
+    content
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| {
+            line.starts_with(|c: char| c.is_ascii_digit())
+                || line.starts_with('-')
+                || line.starts_with('*')
+        })
+        .map(|line| {
+            line.trim_start_matches(|c: char| c.is_ascii_digit())
+                .trim_start_matches(['.', ')', '-', '*'])
+                .trim()
+                .to_string()
+        })
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Lista las sesiones existentes.
+async fn cmd_sessions(data_dir: &PathBuf) -> Result<()> {
+    let session = SessionManager::open(data_dir)?;
+    let sessions = session.list_sessions();
+
+    if sessions.is_empty() {
+        println!("No sessions found.");
+        return Ok(());
+    }
+
+    for (id, model, created, count) in sessions {
+        println!("{id}\t[{model}]\t{count} nodes\t{created}");
+    }
+
+    Ok(())
+}
+
+/// Indexa el workspace actual (o la ruta dada) con SML en workspace.vdb.
+///
+/// Siempre reconstruye el índice desde cero para evitar duplicados.
+async fn cmd_index(data_dir: &std::path::Path, path: Option<&str>) -> Result<()> {
+    let dogma_config =
+        config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
+
+    let embedder = HttpEmbedder::build_optional(
+        &dogma_config.provider,
+        dogma_config.embedding_model.as_deref(),
+    )
+    .ok_or_else(|| {
+        dogma_v2_common::error::Error::Validation(
+            "No embedding model configured. Set DOGMA_EMBEDDING_MODEL or \
+             [provider] embedding_model in keys.toml"
+                .into(),
+        )
+    })?;
+
+    let root = match path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir().unwrap_or_default(),
+    };
+    if !root.is_dir() {
+        return Err(dogma_v2_common::error::Error::Validation(format!(
+            "not a directory: {}",
+            root.display()
+        )));
+    }
+
+    // Reconstrucción limpia: borrar el índice anterior
+    let vdb_path = data_dir.join("workspace.vdb");
+    if vdb_path.exists() {
+        std::fs::remove_file(&vdb_path).map_err(|e| dogma_v2_common::error::Error::Io {
+            path: vdb_path.clone(),
+            source: e,
+        })?;
+    }
+
+    let mut collection = open_workspace_collection(data_dir)?;
+    let indexer = WorkspaceIndexer::new(Arc::new(embedder));
+    let count = indexer.index_dir(&root, &mut collection);
+
+    if count == 0 {
+        return Err(dogma_v2_common::error::Error::Internal(format!(
+            "no files indexed under {} (check extensions/size)",
+            root.display()
+        )));
+    }
+
+    println!(
+        "Indexed {count} chunks from {} into {}",
+        root.display(),
+        vdb_path.display()
+    );
+
+    Ok(())
+}
+
 /// Spawna una tarea de LLM y devuelve un receptor para la respuesta.
 fn spawn_llm(
     runtime: &Arc<RuntimeLoop>,
@@ -581,9 +895,8 @@ async fn cmd_interactive(
     initial_prompt: Option<&str>,
     json_mode: bool,
     sandbox_mode: SandboxMode,
+    resume_session: Option<&str>,
 ) -> Result<()> {
-    use dogma_v2_core::models::events::AgentEvent;
-    use tokio::sync::mpsc;
     use ui::InputEvent;
 
     emit_event(
@@ -599,65 +912,23 @@ async fn cmd_interactive(
     let dogma_config =
         config::load_config(None).map_err(dogma_v2_common::error::Error::Validation)?;
     let model_name = dogma_config.provider.model.clone();
-    let provider = Arc::new(OpenAiProvider::new(dogma_config.provider)?);
 
-    // ── 2. Inicializar sesión ───────────────────────────────────────
-    let mut session = SessionManager::open(data_dir)?;
-    let session_id = session.create_session("dogma-v2-interactive")?;
-
-    // ── 3. Inicializar seguridad ────────────────────────────────────
-    ToolGuardrail::init(SecurityConfig {
-        mode: SecurityMode::SemiAutonomous,
-        allowed_dirs: vec![
-            data_dir.clone(),
-            std::env::current_dir().unwrap_or_default(),
-        ],
-        sandbox_mode,
-        sandbox_limits: None,
-    });
-
-    // ── 4. Crear runtime con canal de eventos ───────────────────────
-    let tools = create_survival_tools();
-    let loop_config = LoopConfig {
-        max_tool_iterations: dogma_config.max_tool_iterations,
-        ..LoopConfig::default()
-    };
+    // ── 2. Runtime completo con canal de eventos ────────────────────
     let (event_tx, mut event_rx) = mpsc::channel::<AgentEvent>(256);
 
-    let runtime = Arc::new(RuntimeLoop::new(
-        provider.clone(),
-        tools,
-        session,
-        loop_config,
+    let bundle = setup_runtime(
+        data_dir,
+        &dogma_config,
+        sandbox_mode,
+        resume_session,
         Some(event_tx),
-    ));
+    )
+    .await?;
 
-    let memory_search = SearchMemoryTool::new(runtime.session_handle());
-    runtime.register_tool(Box::new(memory_search));
+    let runtime = bundle.runtime;
+    let session_id = bundle.session_id;
 
-    let plan_tool = PlanTool::new(runtime.session_handle());
-    runtime.register_tool(Box::new(plan_tool));
-
-    match InstallSkillTool::new(provider.clone(), data_dir) {
-        Ok(skill_tool) => {
-            runtime.register_tool(Box::new(skill_tool));
-            info!("InstallSkillTool registered");
-        }
-        Err(e) => warn!("Failed to register InstallSkillTool: {e}"),
-    }
-
-    let subagent_config = SubAgentConfig {
-        role: AgentRole::Orchestrator,
-        max_spawn_depth: 2,
-        max_iterations: 5,
-        ..SubAgentConfig::default()
-    };
-    let subagent_mgr = SubAgentManager::new(Arc::clone(&runtime), subagent_config);
-    let delegate_tool = DelegateTaskTool::new(Arc::new(subagent_mgr));
-    runtime.register_tool(Box::new(delegate_tool));
-    info!("DelegateTaskTool registered");
-
-    // ── 5. UI setup ─────────────────────────────────────────────────
+    // ── 3. UI setup ─────────────────────────────────────────────────
     let is_tty = std::io::stdin().is_terminal();
     if is_tty {
         crossterm::terminal::enable_raw_mode().map_err(|e| {

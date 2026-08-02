@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 dogma-v2-common = { path = "../dogma-v2-common" }
 dogma-v2-core = { path = "../dogma-v2-core" }
+dogma-vdb = { path = "../../dogma-vdb" }
 
 # CLI
 clap.workspace = true
@@ -33,6 +34,7 @@ tracing-subscriber.workspace = true
 
 # Utilities
 chrono.workspace = true
+parking_lot.workspace = true
 
 # Terminal — UI
 crossterm = "0.28"

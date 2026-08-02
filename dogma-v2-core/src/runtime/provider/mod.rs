@@ -4,6 +4,7 @@
 //! que implemente `LLMProvider` puede ser inyectado en el `RuntimeLoop`
 //! sin cambiar el código del runtime.
 
+pub mod embedder;
 pub mod openai;
 
 use async_trait::async_trait;

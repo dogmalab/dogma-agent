@@ -43,6 +43,25 @@ pub struct SessionManager {
     embedder: Option<Arc<dyn Embedder>>,
 }
 
+/// Configuración compartida para colecciones dogma-vdb del agente.
+///
+/// HNSW + cosine por defecto, SQ opcional via `DOGMA_VDB_COLLECTION_SQ`.
+/// Se usa tanto para `sessions.vdb` como para `workspace.vdb` para
+/// garantizar dimensiones y métrica consistentes.
+pub(crate) fn collection_config() -> dogma_vdb::config::CollectionConfig {
+    let mut cfg = dogma_vdb::config::CONFIG.collection.clone();
+    cfg.index_type = "hnsw".into();
+    cfg.index_metric = "cosine".into();
+    if std::env::var("DOGMA_VDB_COLLECTION_SQ")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+    {
+        cfg.sq = true;
+        cfg.sq_rescore = true;
+    }
+    cfg
+}
+
 impl SessionManager {
     /// Abre (o crea) un gestor de sesiones.
     ///
@@ -60,24 +79,13 @@ impl SessionManager {
 
         let vdb_path = base_path.join("sessions.vdb");
 
-        // Build collection config: HNSW by default, SQ if env var set
-        let mut cfg = dogma_vdb::config::CONFIG.collection.clone();
-        cfg.index_type = "hnsw".into();
-        cfg.index_metric = "cosine".into();
-        if std::env::var("DOGMA_VDB_COLLECTION_SQ")
-            .map(|v| v == "true")
-            .unwrap_or(false)
-        {
-            cfg.sq = true;
-            cfg.sq_rescore = true;
-        }
-
-        let collection = Collection::open_with_config(&vdb_path, &cfg).map_err(|e| {
-            dogma_v2_common::error::Error::Io {
-                path: vdb_path,
-                source: std::io::Error::other(e.to_string()),
-            }
-        })?;
+        let collection =
+            Collection::open_with_config(&vdb_path, &collection_config()).map_err(|e| {
+                dogma_v2_common::error::Error::Io {
+                    path: vdb_path,
+                    source: std::io::Error::other(e.to_string()),
+                }
+            })?;
 
         info!("SessionManager opened at {}", base_path.display());
         Ok(Self {
@@ -282,6 +290,31 @@ impl SessionManager {
             .documents()
             .filter(|d| d.metadata_val("node_type") == Some(node_type))
             .count()
+    }
+
+    /// Lista las sesiones existentes ordenadas por fecha (más recientes primero).
+    ///
+    /// Cada entrada es `(session_id, model, created_at, node_count)`.
+    pub fn list_sessions(&self) -> Vec<(String, String, String, usize)> {
+        let mut sessions: Vec<(String, String, String, usize)> = self
+            .collection
+            .documents()
+            .filter(|d| d.metadata_val("node_type") == Some("Session"))
+            .map(|d| {
+                let id = d.id.clone();
+                let model = d.metadata_val("model").unwrap_or("").to_string();
+                let created_at = d.metadata_val("created_at").unwrap_or("").to_string();
+                let count = self
+                    .collection
+                    .documents()
+                    .filter(|m| m.metadata_val("session_id") == Some(id.as_str()))
+                    .count();
+                (id, model, created_at, count)
+            })
+            .collect();
+
+        sessions.sort_by(|a, b| b.2.cmp(&a.2));
+        sessions
     }
 
     /// Busca contexto semánticamente similar en el historial de la sesión.

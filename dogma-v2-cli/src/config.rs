@@ -28,6 +28,9 @@ use serde::Deserialize;
 pub struct DogmaConfig {
     pub provider: ProviderConfig,
     pub max_tool_iterations: u32,
+    /// Modelo de embeddings opcional (endpoint `/embeddings` del proveedor).
+    /// Si es `None`, la búsqueda semántica queda deshabilitada.
+    pub embedding_model: Option<String>,
 }
 
 impl Default for DogmaConfig {
@@ -35,6 +38,7 @@ impl Default for DogmaConfig {
         Self {
             provider: ProviderConfig::default(),
             max_tool_iterations: 50,
+            embedding_model: None,
         }
     }
 }
@@ -55,6 +59,9 @@ struct ProviderSection {
     base_url: String,
     model: String,
     api_key: String,
+    /// Modelo de embeddings opcional (ej: `text-embedding-3-small`).
+    #[serde(default)]
+    embedding_model: Option<String>,
 }
 
 /// Sección `[runtime]` del keys.toml (opcional).
@@ -107,6 +114,7 @@ pub fn load_config(keys_path: Option<&Path>) -> Result<DogmaConfig, String> {
     let base_url = std::env::var("DOGMA_BASE_URL").ok();
     let model = std::env::var("DOGMA_MODEL").ok();
     let api_key = std::env::var("DOGMA_API_KEY").ok();
+    let embedding_model = std::env::var("DOGMA_EMBEDDING_MODEL").ok();
 
     if let (Some(url), Some(mdl), Some(key)) = (&base_url, &model, &api_key) {
         return Ok(DogmaConfig {
@@ -117,6 +125,7 @@ pub fn load_config(keys_path: Option<&Path>) -> Result<DogmaConfig, String> {
                 ..Default::default()
             },
             max_tool_iterations: 50,
+            embedding_model,
         });
     }
 
@@ -160,6 +169,7 @@ fn load_from_toml_file(path: &Path) -> Option<DogmaConfig> {
             ..Default::default()
         },
         max_tool_iterations: toml_config.runtime.max_tool_iterations.unwrap_or(50),
+        embedding_model: toml_config.provider.embedding_model,
     })
 }
 
