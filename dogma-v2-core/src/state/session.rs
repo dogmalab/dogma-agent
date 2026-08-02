@@ -29,7 +29,7 @@ use dogma_vdb::doc::Document;
 use dogma_vdb::embedding::Embedder;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Gestiona las sesiones del agente como nodos en dogma-vdb.
 pub struct SessionManager {
@@ -59,11 +59,25 @@ impl SessionManager {
         })?;
 
         let vdb_path = base_path.join("sessions.vdb");
-        let collection =
-            Collection::open(&vdb_path).map_err(|e| dogma_v2_common::error::Error::Io {
+
+        // Build collection config: HNSW by default, SQ if env var set
+        let mut cfg = dogma_vdb::config::CONFIG.collection.clone();
+        cfg.index_type = "hnsw".into();
+        cfg.index_metric = "cosine".into();
+        if std::env::var("DOGMA_VDB_COLLECTION_SQ")
+            .map(|v| v == "true")
+            .unwrap_or(false)
+        {
+            cfg.sq = true;
+            cfg.sq_rescore = true;
+        }
+
+        let collection = Collection::open_with_config(&vdb_path, &cfg).map_err(|e| {
+            dogma_v2_common::error::Error::Io {
                 path: vdb_path,
                 source: std::io::Error::other(e.to_string()),
-            })?;
+            }
+        })?;
 
         info!("SessionManager opened at {}", base_path.display());
         Ok(Self {
@@ -78,6 +92,12 @@ impl SessionManager {
     pub fn with_embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
         self.embedder = Some(embedder);
         self
+    }
+
+    /// Devuelve una referencia al embedder configurado (si existe).
+    #[must_use]
+    pub fn embedder(&self) -> Option<&Arc<dyn Embedder>> {
+        self.embedder.as_ref()
     }
 
     /// Crea una nueva sesión y devuelve su ID.
@@ -403,6 +423,11 @@ impl SessionManager {
             return Ok(0);
         }
 
+        // Check memory pressure before batch embedding
+        if let Err(e) = dogma_vdb::memory::ensure_memory() {
+            warn!("Memory pressure before batch embedding: {e}");
+        }
+
         let texts: Vec<&str> = pending.iter().map(|d| d.text.as_str()).collect();
         let embeddings = embedder.embed_batch(&texts).map_err(|e| {
             dogma_v2_common::error::Error::Internal(format!("batch embedding failed: {e}"))
@@ -423,6 +448,37 @@ impl SessionManager {
 
         debug!("Embedded {} pending messages", embed_count);
         Ok(embed_count)
+    }
+
+    /// Marca un mensaje como "memoria global" para que aparezca
+    /// en búsquedas cross-sesión.
+    ///
+    /// Esto se usa cuando el agente consolida un aprendizaje al final
+    /// de una tarea exitosa — ese conocimiento debe persistir.
+    pub fn mark_as_global_memory(&mut self, node_id: &str) -> Result<()> {
+        let doc = self
+            .collection
+            .documents()
+            .find(|d| d.id == node_id)
+            .cloned()
+            .ok_or_else(|| {
+                dogma_v2_common::error::Error::Validation(format!("document not found: {node_id}"))
+            })?;
+
+        let mut new_meta = doc.metadata.clone();
+        new_meta.insert("is_global_memory".to_string(), "true".to_string());
+
+        let updated = Document::builder(&doc.id, &doc.text)
+            .embedding(doc.embedding.clone())
+            .metadatas(new_meta)
+            .build();
+
+        self.collection
+            .update(updated)
+            .map_err(|e| dogma_v2_common::error::Error::StorageCorrupted(e.to_string()))?;
+
+        debug!("Marked {node_id} as global memory");
+        Ok(())
     }
 
     // ── Plan persistence ────────────────────────────────────────────
@@ -574,6 +630,46 @@ impl SessionManager {
                     Some("Message") | Some("ToolResult") | Some("Chunk")
                 )
             });
+
+        results
+            .into_iter()
+            .map(|sd| {
+                let session_id = sd
+                    .document
+                    .metadata_val("session_id")
+                    .unwrap_or("")
+                    .to_string();
+                let created_at = sd.document.metadata_val("created_at").map(String::from);
+                let parent_id = sd.document.metadata_val("parent_id").map(String::from);
+                super::compressor::SemanticMatch {
+                    node_id: sd.document.id,
+                    content: sd.document.text,
+                    score: sd.score,
+                    session_id,
+                    created_at,
+                    parent_id,
+                }
+            })
+            .collect()
+    }
+
+    /// Búsqueda con embedding pre-computado y filtro personalizado.
+    ///
+    /// A diferencia de `search_similar_global_raw`, este método permite
+    /// al caller especificar un closure de filtro arbitrario. Usado por
+    /// el context manager anti-entropía que filtra por sesión actual
+    /// + memorias globales.
+    pub fn search_filtered_raw(
+        &self,
+        embedding: &[f32],
+        k: usize,
+        filter: &(dyn Fn(&Document) -> bool + Sync),
+    ) -> Vec<super::compressor::SemanticMatch> {
+        if embedding.is_empty() {
+            return Vec::new();
+        }
+
+        let results = self.collection.search_filtered(embedding, k, filter);
 
         results
             .into_iter()

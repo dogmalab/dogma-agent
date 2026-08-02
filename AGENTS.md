@@ -44,15 +44,15 @@ total de estado en dogma-vdb**.
 
 ---
 
-## Estado Actual (2026-07-07)
+## Estado Actual (2026-08-01)
 
 ### Estructura del Workspace
 
 | Crate | Descripcion | Estado |
 |-------|-------------|--------|
 | `dogma-v2-common` | Tipos compartidos, protocolo NDJSON, traits fundamentales | Completo |
-| `dogma-v2-core` | Runtime async, loop de herramientas (RSI), `LLMProvider`, gestión de estado, compresor, **IE (F2)**, **Cost Gate (F2)** | En desarrollo (F2 pendiente) |
-| `dogma-v2-cli` | CLI con clap, TUI modular, modo `--json`, comando `/ei` | Completo (cmd_plan es placeholder) |
+| `dogma-v2-core` | Runtime async, loop de herramientas (RSI), `LLMProvider`, gestión de estado, compresor, **IE (F2)**, **Cost Gate (F2)**, **HttpEmbedder**, **Workspace SML** | Completo |
+| `dogma-v2-cli` | CLI con clap, TUI modular, modo `--json`, comando `ei`, `sessions`, `index`, plan real | Completo |
 
 > **Nota:** el conteo exacto de líneas y tests se mide con
 > `cargo test --workspace` antes de cada release. La cifra
@@ -206,8 +206,9 @@ no es negociable — es la Cuarta Pregunta del
 - **Determinista**: Podar payloads de herramientas masivas (>500
   chars → resumen).
 - **Semantico**: Busqueda de similitud de coseno via mmap de
-  dogma-vdb. **Pendiente de integración** (F2 conecta el
-  embedder real).
+  dogma-vdb. Implementado con `HttpEmbedder` (`/embeddings` del
+  proveedor) conectado via `SessionManager::with_embedder`. El
+  `WorkspaceIndexer` indexa el código con SML en `workspace.vdb`.
 
 ---
 
@@ -336,13 +337,15 @@ Esta sección lista los items específicos del agent harness.
 - [x] Tests: `tests/enriched_inference.rs` con `MockProvider`
       (sin HTTP, paralelismo, abort del gate, formato del
       synthesis prompt)
-- [ ] Conectar el embedder real en `Compressor` (FIXME existente)
+- [x] Conectar el embedder real (`HttpEmbedder` vía `/embeddings` del
+      proveedor) — `search_semantic` y el contexto inteligente activos
 
 ### Pendiente (F4+)
 
-- [ ] `cmd_plan` con planificador real (actualmente es placeholder)
-- [ ] Sesiones persistentes con recuperación de historial
-- [ ] Tests E2E con mock LLM provider
+- [x] `cmd_plan` con planificador real (genera con el LLM y persiste)
+- [x] Sesiones persistentes con recuperación de historial
+      (`dogma sessions` + `--session <id>`)
+- [x] Tests E2E con mock LLM provider
 - [ ] CI pipeline (cargo test, clippy, fmt)
 - [ ] Frontend (consumiendo NDJSON via SSE) — el gateway es el
       lugar para esto, no el agent

@@ -2,11 +2,11 @@
 //!
 //! Muestra el estado de cada tool call: nombre, args, resultado.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// Display de una ejecución de tool.
 pub struct ToolDisplay {
@@ -76,18 +76,9 @@ impl ToolDisplay {
     pub fn render(&self, lines: &mut Vec<ratatui::text::Line<'static>>) {
         for entry in &self.entries {
             let (icon, style) = match &entry.status {
-                ToolStatus::Running => (
-                    "⟳".to_string(),
-                    Style::default().fg(Color::Yellow),
-                ),
-                ToolStatus::Done => (
-                    "✓".to_string(),
-                    Style::default().fg(Color::Green),
-                ),
-                ToolStatus::Error(_) => (
-                    "✗".to_string(),
-                    Style::default().fg(Color::Red),
-                ),
+                ToolStatus::Running => ("⟳".to_string(), Style::default().fg(Color::Yellow)),
+                ToolStatus::Done => ("✓".to_string(), Style::default().fg(Color::Green)),
+                ToolStatus::Error(_) => ("✗".to_string(), Style::default().fg(Color::Red)),
             };
 
             let name_style = Style::default()

@@ -147,11 +147,7 @@ fn detect_git_status(cwd: &Path) -> (Option<String>, bool) {
     let head_file = dir.join(".git/HEAD");
     let branch = std::fs::read_to_string(&head_file)
         .ok()
-        .and_then(|s| {
-            s.trim()
-                .strip_prefix("ref: refs/heads/")
-                .map(String::from)
-        });
+        .and_then(|s| s.trim().strip_prefix("ref: refs/heads/").map(String::from));
 
     // Detectar dirty: buscar archivos modificados
     let dirty = std::process::Command::new("git")

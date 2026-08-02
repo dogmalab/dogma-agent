@@ -91,10 +91,7 @@ impl Tool for WebExtractTool {
         let mut documents = Vec::new();
         if let Some(results) = data.get("results").and_then(Value::as_array) {
             for result in results {
-                let content = result
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
+                let content = result.get("text").and_then(Value::as_str).unwrap_or("");
 
                 documents.push(serde_json::json!({
                     "url": result.get("url").and_then(Value::as_str).unwrap_or(""),
@@ -137,7 +134,9 @@ mod tests {
     #[tokio::test]
     async fn test_too_many_urls() {
         let tool = WebExtractTool::new("test-key".into());
-        let urls: Vec<String> = (0..11).map(|i| format!("https://example.com/{i}")).collect();
+        let urls: Vec<String> = (0..11)
+            .map(|i| format!("https://example.com/{i}"))
+            .collect();
         let result = tool.call(&json!({"urls": urls})).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("maximum 10"));

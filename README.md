@@ -35,15 +35,6 @@ that asks the user to confirm the cost before the run.
 
 ## Workspace Crates
 
-| Crate | Description | LOC |
-|-------|-------------|-----|
-| `dogma-v2-common` | Shared error types, NDJSON event protocol, and foundational traits | ~270 |
-| `dogma-v2-core` | Async agent runtime — tool loop (RSI), LLM provider abstraction, state management on dogma-vdb, context compressor | ~1,800 |
-| `dogma-v2-cli` | Terminal entrypoint — Clap-based command dispatch, NDJSON output mode | ~265 |
-| `dogma-gateway` | Axum HTTP reverse proxy — edge validation, SSE streaming IPC to agent, RAG orchestration | ~270 |
-
-## Workspace Crates
-
 | Crate | Description |
 |---|---|
 | `dogma-v2-common` | Shared error types, NDJSON event protocol, and foundational traits |
@@ -62,7 +53,9 @@ that asks the user to confirm the cost before the run.
 | `dogma init` | Initialize the agent data directory and create the `.vdb` files. |
 | `dogma chat "<prompt>"` | One-shot interaction with the single-LLM runtime loop. |
 | `dogma interactive [prompt]` | TUI mode with chat history, scroll, and slash commands. |
-| `dogma plan "<task>"` | Structured planning (placeholder at MVP). |
+| `dogma plan "<task>"` | Structured planning — LLM-generated steps persisted to the session. |
+| `dogma sessions` | List existing sessions (resume with `--session <id>`). |
+| `dogma index [--path DIR]` | Index the workspace with SML into `workspace.vdb` for semantic context. |
 | `dogma ei "<query>"` | **Enriched Inference** — N LLMs in parallel with a compiler, gated by Cost Gate. Flags: `--compiler`, `--n-proposers`, `--iterations`, `--gate {interactive\|auto\|trusted}`. |
 
 ### `dogma ei` — Enriched Inference (the flagship pattern)

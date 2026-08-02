@@ -93,9 +93,9 @@ impl ContextManager {
         }
 
         // 2. No buscar si no hay embedder
-        let embedding = embedder.embed(current_query).map_err(|e| {
-            format!("context manager: embedding failed: {e}")
-        })?;
+        let embedding = embedder
+            .embed(current_query)
+            .map_err(|e| format!("context manager: embedding failed: {e}"))?;
 
         if embedding.is_empty() {
             debug!("Context manager: embedder returned empty vector");

@@ -16,7 +16,7 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{ChatRenderer, Spinner, StatusBar, ToolDisplay};
@@ -90,12 +90,12 @@ impl Renderer {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Min(3),       // chat
-                    Constraint::Length(1),    // tools
-                    Constraint::Length(1),    // separator
-                    Constraint::Length(1),    // input
-                    Constraint::Length(1),    // separator
-                    Constraint::Length(1),    // status bar
+                    Constraint::Min(3),    // chat
+                    Constraint::Length(1), // tools
+                    Constraint::Length(1), // separator
+                    Constraint::Min(3),    // input (multiline, min 3 lines)
+                    Constraint::Length(1), // separator
+                    Constraint::Length(1), // status bar
                 ])
                 .split(inner);
 
@@ -136,10 +136,7 @@ impl Renderer {
 
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
         match event {
-            AgentEvent::SubAgentSpawned {
-                description,
-                ..
-            } => {
+            AgentEvent::SubAgentSpawned { description, .. } => {
                 self.tools.start(&description);
                 self.draw();
             }
@@ -149,16 +146,11 @@ impl Renderer {
                 duration_ms,
                 ..
             } => {
-                self.tools.finish(
-                    &tool_name,
-                    &format!("done in {duration_ms}ms"),
-                );
+                self.tools
+                    .finish(&tool_name, &format!("done in {duration_ms}ms"));
                 self.draw();
             }
-            AgentEvent::GoalEvaluated {
-                completed,
-                ..
-            } => {
+            AgentEvent::GoalEvaluated { completed, .. } => {
                 if !completed {
                     self.tools.fail("goal", "goal failed");
                 }
@@ -288,10 +280,21 @@ fn render_separator(frame: &mut ratatui::Frame, area: Rect) {
 }
 
 fn render_input(frame: &mut ratatui::Frame, area: Rect, input_buffer: &str) {
-    let paragraph = Paragraph::new(input_buffer.to_string());
+    // Render multiline input: split by newlines and display each line
+    let lines: Vec<Line> = input_buffer
+        .split('\n')
+        .map(|line| Line::from(Span::raw(line.to_string())))
+        .collect();
+
+    let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, area);
-    let cursor_x = area.x + input_buffer.len() as u16;
-    frame.set_cursor_position((cursor_x, area.y));
+
+    // Position cursor at the end of the last line
+    let line_count = input_buffer.lines().count().max(1);
+    let last_line = input_buffer.lines().last().unwrap_or("");
+    let cursor_x = area.x + last_line.len() as u16;
+    let cursor_y = area.y + (line_count as u16).saturating_sub(1);
+    frame.set_cursor_position((cursor_x, cursor_y));
 }
 
 #[cfg(test)]

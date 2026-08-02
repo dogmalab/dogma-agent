@@ -108,18 +108,8 @@ impl Compressor {
     /// # Errors
     ///
     /// Devuelve error si la búsqueda vectorial falla.
-    pub async fn search_semantic(&self, _query: &str, _limit: usize) -> Result<Vec<SemanticMatch>> {
-        // FIXME: Requiere integración con el embedder de dogma-vdb.
-        // Por ahora es un placeholder que devuelve resultados vacíos.
-        //
-        // La implementación real hará:
-        // 1. Generar embedding del query via Embedder
-        // 2. Collection::search(embedding, limit) para encontrar
-        //    nodos similares
-        // 3. Devolver los textos originales como contexto
-
-        debug!("Semantic search requested but embedder not yet connected");
-        Ok(Vec::new())
+    pub async fn search_semantic(&self, query: &str, limit: usize) -> Result<Vec<SemanticMatch>> {
+        self.session.search_similar_global(query, limit)
     }
 
     /// Genera un resumen para un grupo de tool calls consecutivas.

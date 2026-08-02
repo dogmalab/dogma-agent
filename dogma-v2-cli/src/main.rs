@@ -126,6 +126,13 @@ enum Commands {
         #[arg(long, default_value = "interactive")]
         gate: String,
     },
+
+    /// Exporta datos de sesiones a JSONL para inspección/debug.
+    Export {
+        /// Directorio de datos del agente.
+        #[arg(short, long)]
+        output: String,
+    },
 }
 
 fn main() {
@@ -190,6 +197,7 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await
         }
+        Commands::Export { output } => cmd_export(&data_dir, &output).await,
     }
 }
 
@@ -247,6 +255,16 @@ async fn cmd_init(data_dir: &PathBuf, json_mode: bool, sandbox_mode: SandboxMode
         ),
     );
 
+    Ok(())
+}
+
+/// Exporta sesiones a JSONL para debug/inspección.
+async fn cmd_export(data_dir: &PathBuf, output: &str) -> Result<()> {
+    let session = SessionManager::open(data_dir)?;
+    let col = session.collection();
+    col.export_jsonl(output)
+        .map_err(|e| dogma_v2_common::error::Error::Internal(format!("export failed: {e}")))?;
+    println!("Exported session data to {output}");
     Ok(())
 }
 
@@ -679,23 +697,29 @@ async fn cmd_interactive(
                         use crossterm::event::{KeyCode, KeyModifiers};
                         match key.code {
                             KeyCode::Enter => {
-                                // Shift+Enter detection: si el buffer ya tiene
-                                // líneas nuevas, agregar otra en vez de submit.
-                                if input_buffer.contains('\n') {
+                                // Enter: si la línea actual está llena → nueva línea
+                                //        si no → enviar
+                                let current_line = input_buffer.lines().last().unwrap_or("");
+                                let term_width = crossterm::terminal::size()
+                                    .map(|(w, _)| w as usize)
+                                    .unwrap_or(80);
+                                let line_full = current_line.len() >= term_width.saturating_sub(4);
+
+                                if line_full {
                                     input_buffer.push('\n');
                                     renderer.show_input(&input_buffer);
                                     continue;
                                 }
 
-                                let line = input_buffer.trim().to_string();
-                                if line.is_empty() {
+                                let prompt = input_buffer.trim().to_string();
+                                if prompt.is_empty() {
                                     continue;
                                 }
 
-                                match line.as_str() {
+                                match prompt.as_str() {
                                     "/exit" | "/quit" => break,
                                     "/help" => {
-                                        renderer.show_sent(&line);
+                                        renderer.show_sent(&prompt);
                                         eprintln!(
                                             "┌─ Dogma 2.0 Interactive ─────────────────────────────────┐\n\
                                              │                                                           │\n\
@@ -710,9 +734,9 @@ async fn cmd_interactive(
                                              │    /status      — Show session stats                      │\n\
                                              │                                                           │\n\
                                              │  INPUT                                                     │\n\
-                                             │    <text> Enter — Send prompt to agent                    │\n\
-                                             │    Ctrl+J         — New line in multi-line input            │\n\
-                                             │    Up / Down    — Navigate input history                  │\n\
+                                             │    Enter      — Send prompt (or newline if line is full)  │\n\
+                                             │    Ctrl+J     — Always add new line                       │\n\
+                                             │    Up / Down  — Navigate input history                    │\n\
                                              │                                                           │\n\
                                              │  SCROLL                                                    │\n\
                                              │    PageUp/Down  — Scroll chat                             │\n\
@@ -732,7 +756,7 @@ async fn cmd_interactive(
                                         renderer.show_input("");
                                     }
                                     "/status" => {
-                                        renderer.show_sent(&line);
+                                        renderer.show_sent(&prompt);
                                         eprintln!("Session: {session_id}");
                                         eprintln!("Model: {model_name}");
                                         eprintln!("Data dir: {}", data_dir.display());

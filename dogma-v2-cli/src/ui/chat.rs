@@ -3,11 +3,11 @@
 //! Muestra el historial de conversación con thinking blocks
 //! y markdown renderizado.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
-use ratatui::Frame;
 
 use super::markdown::render_markdown;
 

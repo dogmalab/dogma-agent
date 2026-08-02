@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use crate::models::events::AgentEvent;
 use crate::runtime::provider::{LLMProvider, LLMResponse, Message, MessageRole, TokenUsage};
+use crate::state::compressor::SemanticMatch;
 use crate::state::session::SessionManager;
 use crate::tools::{Tool, ToolRegistry};
 use dogma_v2_common::Result;
@@ -63,7 +64,7 @@ impl Default for LoopConfig {
             max_tool_iterations: 25,
             context_compression: true,
             system_prompt: DEFAULT_SYSTEM_PROMPT.to_string(),
-            context_management: false,
+            context_management: true,
             context_recent_turns: 5,
             context_max_relevant: 5,
             context_relevance_threshold: 0.3,
@@ -116,6 +117,19 @@ fn document_to_message(doc: &Document) -> Option<Message> {
     }
 }
 
+/// Extrae los últimos N turnos del historial de forma segura.
+///
+/// Un "turno" = User message + Assistant response (2 mensajes).
+/// Usa skip/take para evitar pánicos por out-of-bounds.
+fn extract_recent_turns(history: &[Message], recent_turns: usize) -> &[Message] {
+    let max_messages = recent_turns * 2;
+    if history.len() <= max_messages {
+        history
+    } else {
+        &history[history.len() - max_messages..]
+    }
+}
+
 /// Carga el historial de una sesión desde dogma-vdb y lo convierte a `Vec<Message>`.
 ///
 /// Los mensajes se devuelven ordenados por secuencia (cronológico).
@@ -162,6 +176,11 @@ pub struct RuntimeLoop {
     system_context: crate::state::system_context::SystemContext,
     /// Memoria persistente del usuario (key-value store).
     user_memory: Option<Arc<RwLock<crate::state::user_memory::UserMemory>>>,
+    /// Colección del workspace (código indexado con SML).
+    /// Fuente única de verdad técnica — baja entropía.
+    workspace_collection: Option<Arc<RwLock<dogma_vdb::collection::Collection>>>,
+    /// Plan activo actual (si existe).
+    active_plan: Option<crate::models::plan::Plan>,
 }
 
 impl RuntimeLoop {
@@ -189,13 +208,35 @@ impl RuntimeLoop {
             event_tx,
             system_context,
             user_memory: None,
+            workspace_collection: None,
+            active_plan: None,
         }
     }
 
     /// Conecta la memoria del usuario al runtime.
-    pub fn with_user_memory(mut self, user_memory: Arc<RwLock<crate::state::user_memory::UserMemory>>) -> Self {
+    pub fn with_user_memory(
+        mut self,
+        user_memory: Arc<RwLock<crate::state::user_memory::UserMemory>>,
+    ) -> Self {
         self.user_memory = Some(user_memory);
         self
+    }
+
+    /// Conecta la colección del workspace (código indexado con SML).
+    ///
+    /// Esta colección es la fuente única de verdad técnica — baja entropía.
+    /// Se busca aquí para Axiomas y reglas del codebase.
+    pub fn with_workspace_collection(
+        mut self,
+        workspace: Arc<RwLock<dogma_vdb::collection::Collection>>,
+    ) -> Self {
+        self.workspace_collection = Some(workspace);
+        self
+    }
+
+    /// Establece el plan activo actual.
+    pub fn set_active_plan(&mut self, plan: crate::models::plan::Plan) {
+        self.active_plan = Some(plan);
     }
 
     /// Construye el system prompt dinámico combinando las 4 capas de memoria.
@@ -218,6 +259,213 @@ impl RuntimeLoop {
         prompt
     }
 
+    /// Construye contexto de continuidad: estado actual de ejecución.
+    ///
+    /// Incluye:
+    /// - Último tool result (si existe)
+    /// - Último error (si lo hubo)
+    /// - Plan activo (si existe)
+    fn build_continuity_context(&self, _session_id: &str) -> Option<String> {
+        let state = self.state.read();
+        let mut continuity = String::new();
+
+        // Último tool result
+        if let Some(tr) = state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.role == MessageRole::Tool && !m.content.is_empty())
+        {
+            let preview = if tr.content.len() > 200 {
+                &tr.content[..200]
+            } else {
+                &tr.content
+            };
+            continuity.push_str(&format!("Last tool result: {preview}\n"));
+        }
+
+        // Último error
+        if let Some(err) = state
+            .messages
+            .iter()
+            .rev()
+            .find(|m| m.content.contains("[error]") || m.content.contains("Error:"))
+        {
+            let preview = if err.content.len() > 200 {
+                &err.content[..200]
+            } else {
+                &err.content
+            };
+            continuity.push_str(&format!("Last error: {preview}\n"));
+        }
+
+        // Plan activo
+        if let Some(ref plan) = self.active_plan {
+            continuity.push_str(&format!(
+                "Active plan: {} ({} steps)\n",
+                plan.task,
+                plan.steps.len()
+            ));
+        }
+
+        if continuity.is_empty() {
+            None
+        } else {
+            Some(format!("### EXECUTION STATE:\n{continuity}"))
+        }
+    }
+
+    /// Busca contexto relevante en DOS colecciones con anti-entropía:
+    ///
+    /// 1. Session Collection → SOLO mensajes de ESTA sesión + memorias globales
+    /// 2. Workspace Collection → Código/SML como fuente única de verdad
+    ///
+    /// La asimetría previene deriva semántica: workspace es estático/limpio,
+    /// sesiones son dinámicas/ruidosas. Solo memorias globales marcadas
+    /// explícitamente cruzan la frontera de sesión.
+    fn search_relevant(&self, prompt: &str, session_id: &str) -> Vec<SemanticMatch> {
+        let session = self.session.read();
+        let embedder = match session.embedder() {
+            Some(e) => e,
+            None => return Vec::new(),
+        };
+
+        let embedding = match embedder.embed(prompt) {
+            Ok(e) if !e.is_empty() => e,
+            _ => return Vec::new(),
+        };
+
+        let k = self.config.context_max_relevant * 2;
+
+        // Búsqueda 1: Session Collection → RESTRINGIDA
+        // Solo mensajes de ESTA sesión o marcados como "is_global_memory"
+        let session_results = session.search_filtered_raw(&embedding, k, &|doc| {
+            let same_session = doc.metadata_val("session_id") == Some(session_id);
+            let is_global = doc.metadata_val("is_global_memory") == Some("true");
+            let is_message = matches!(
+                doc.metadata_val("node_type"),
+                Some("Message") | Some("ToolResult") | Some("Chunk")
+            );
+            is_message && (same_session || is_global)
+        });
+
+        // Búsqueda 2: Workspace Collection → SML como verdad técnica
+        // La Collection de workspace devuelve ScoredDocument, los convertimos
+        // a SemanticMatch con session_id="workspace" para distinguirlos.
+        let workspace_results: Vec<SemanticMatch> = if let Some(ref ws) = self.workspace_collection
+        {
+            let ws = ws.read();
+            ws.search_filtered(&embedding, k, &|doc| {
+                doc.metadata_val("sml").is_some() || !doc.text.is_empty()
+            })
+            .into_iter()
+            .map(|sd| SemanticMatch {
+                node_id: sd.document.id,
+                content: sd.document.text,
+                score: sd.score,
+                session_id: "workspace".to_string(),
+                created_at: None,
+                parent_id: None,
+            })
+            .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Fusionar + rankear por score
+        // session_results ya es Vec<SemanticMatch>, workspace_results también
+        let mut all = session_results;
+        all.extend(workspace_results);
+        all.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        all.truncate(k);
+
+        all.into_iter()
+            .filter(|m| m.score >= self.config.context_relevance_threshold)
+            .take(self.config.context_max_relevant)
+            .collect()
+    }
+
+    /// Formatea contexto relevante con conciencia SML.
+    ///
+    /// Si un documento es del workspace y tiene metadata["sml"],
+    /// inyecta el símbolo denso. Si es de sesión, formatea como referencia.
+    fn format_relevant_context(docs: &[SemanticMatch]) -> String {
+        if docs.is_empty() {
+            return String::new();
+        }
+
+        let mut ctx = String::from("### RELEVANT CONTEXT:\n\n");
+        for (i, m) in docs.iter().enumerate() {
+            let is_workspace = m.session_id == "workspace";
+
+            if is_workspace {
+                ctx.push_str(&format!(
+                    "[{i}] (source: {}, score: {:.2})\n",
+                    m.node_id, m.score
+                ));
+                ctx.push_str(&m.content);
+                ctx.push_str("\n\n");
+            } else {
+                let preview_len = m.content.len().min(300);
+                ctx.push_str(&format!(
+                    "[{i}] (session: {}, score: {:.2})\n{}\n\n",
+                    &m.session_id[..m.session_id.len().min(20)],
+                    m.score,
+                    &m.content[..preview_len],
+                ));
+            }
+        }
+        ctx
+    }
+
+    /// Construye el contexto inteligente con dimensiones:
+    ///
+    /// 1. IDENTITY — System prompt + context + user memory
+    /// 2. KNOWLEDGE — Relevant context (dual search anti-entropía)
+    /// 3. MEMORY — Recent turns (sliding window seguro)
+    /// 4. USER INPUT — Prompt actual
+    ///
+    /// NOTA: Continuity context se maneja por separado en `run()`
+    /// para evitar deadlock con self.state.
+    fn build_intelligent_context(&self, prompt: &str, session_id: &str) -> Vec<Message> {
+        let mut messages = Vec::new();
+
+        // [1] IDENTITY
+        messages.push(Message::new(
+            MessageRole::System,
+            self.build_system_prompt(),
+        ));
+
+        // [2] KNOWLEDGE — Relevant context
+        if self.config.context_management {
+            let relevant = self.search_relevant(prompt, session_id);
+            if !relevant.is_empty() {
+                let ctx = Self::format_relevant_context(&relevant);
+                messages.push(Message::new(MessageRole::System, &ctx));
+            }
+        }
+
+        // [3] MEMORY — Recent turns (sliding window)
+        let history = self.load_session_history_inline(session_id);
+        let recent = extract_recent_turns(&history, self.config.context_recent_turns);
+        messages.extend(recent.iter().cloned());
+
+        // [4] USER INPUT
+        messages.push(Message::new(MessageRole::User, prompt));
+
+        messages
+    }
+
+    /// Versión inline de load_session_history para usar dentro del runtime.
+    fn load_session_history_inline(&self, session_id: &str) -> Vec<Message> {
+        let session = self.session.read();
+        load_session_history(&session, session_id)
+    }
+
     /// Ejecuta el ciclo RSI con un prompt de entrada.
     ///
     /// # Errors
@@ -227,72 +475,24 @@ impl RuntimeLoop {
     pub async fn run(&self, prompt: &str, session_id: &str) -> Result<String> {
         info!("Runtime loop starting for session {}", session_id);
 
-        // Cargar historial de sesiones anteriores desde dogma-vdb
-        let history = {
-            let session = self.session.read();
-            load_session_history(&session, session_id)
-        };
+        // Compute continuity BEFORE state lock (reads self.state)
+        let continuity_ctx = self.build_continuity_context(session_id);
 
-        // Construir system prompt dinámico con las 4 capas de memoria
-        let dynamic_prompt = self.build_system_prompt();
-
-        // Construir contexto: system prompt + historial + prompt actual
+        // Construir contexto inteligente: 5 dimensiones (Identity, Knowledge,
+        // Memory, Continuity, User Input) con anti-entropía y conciencia SML.
         {
             let mut state = self.state.write();
             state.iteration = 0;
-            state.messages = history;
+            state.messages = self.build_intelligent_context(prompt, session_id);
 
-            // Si context management está habilitado, buscar contexto relevante
-            if self.config.context_management && state.messages.len() > 1 {
-                let recent = state.messages.len().min(self.config.context_recent_turns * 2);
-                let recent_msgs = state.messages[state.messages.len() - recent..].to_vec();
-
-                let cm = crate::state::context_manager::ContextManager::new(
-                    crate::state::context_manager::ContextConfig {
-                        recent_turns: self.config.context_recent_turns,
-                        max_relevant: self.config.context_max_relevant,
-                        relevance_threshold: self.config.context_relevance_threshold,
-                    },
-                );
-
-                if cm.should_optimize(state.messages.len()) {
-                    let session = self.session.read();
-                    let search_fn = |embedding: &[f32], k: usize| {
-                        session.search_similar_global_raw(embedding, k)
-                    };
-
-                    if let Ok(relevant) = cm.build_context(
-                        &recent_msgs,
-                        session_id,
-                        prompt,
-                        &crate::state::session::NullEmbedder,
-                        search_fn,
-                    ) {
-                        if !relevant.is_empty() {
-                            let ctx_text = crate::state::context_manager::ContextManager::format_relevant_context(&relevant);
-                            debug!(
-                                "Injecting {} relevant messages into context",
-                                relevant.len()
-                            );
-                            state.messages.insert(
-                                1,
-                                crate::runtime::provider::Message::new(
-                                    crate::runtime::provider::MessageRole::System,
-                                    &ctx_text,
-                                ),
-                            );
-                        }
-                    }
-                }
+            // Inject continuity context before user input (already computed)
+            if let Some(ctx) = continuity_ctx {
+                // Insertar antes del último mensaje (user input)
+                let insert_pos = state.messages.len().saturating_sub(1);
+                state
+                    .messages
+                    .insert(insert_pos, Message::new(MessageRole::System, &ctx));
             }
-
-            // Inyectar system prompt dinámico al inicio del contexto
-            state.messages.insert(
-                0,
-                Message::new(MessageRole::System, &dynamic_prompt),
-            );
-
-            state.messages.push(Message::new(MessageRole::User, prompt));
         }
 
         debug!(
@@ -304,6 +504,7 @@ impl RuntimeLoop {
         {
             let mut session = self.session.write();
             session.append_message(session_id, MessageRole::User, prompt, &[])?;
+            let _ = session.embed_pending_messages(session_id);
         }
 
         let result = self.tool_loop(session_id).await;
@@ -320,6 +521,7 @@ impl RuntimeLoop {
             };
             let mut session = self.session.write();
             session.append_message(session_id, MessageRole::Assistant, final_content, &extra)?;
+            let _ = session.embed_pending_messages(session_id);
         }
 
         result
@@ -453,6 +655,21 @@ impl RuntimeLoop {
                 usage,
                 extra_fields,
             };
+
+            // Emitir StatusUpdate con datos reales del LLM
+            if let Some(ref tx) = self.event_tx {
+                let context_used = if response.usage.total_tokens > 0 {
+                    (response.usage.total_tokens as f32 / 128_000.0) * 100.0
+                } else {
+                    0.0
+                };
+                let model = self.provider.config().model.clone();
+                let _ = tx.try_send(AgentEvent::StatusUpdate {
+                    context_used: context_used.min(100.0),
+                    total_tokens: response.usage.total_tokens as u64,
+                    model,
+                });
+            }
 
             // Persist assistant response
             {

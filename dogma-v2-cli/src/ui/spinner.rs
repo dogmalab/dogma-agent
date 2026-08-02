@@ -4,11 +4,11 @@
 //! Ciclo lento (150ms) que evoca sabiduría antigua,
 //! consistente con la estética "Dogma".
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 /// Frames de animación — ASCII puro, funciona en cualquier terminal.
 const FRAMES: [&str; 4] = ["o", "O", "0", "O"];

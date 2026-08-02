@@ -101,7 +101,7 @@ fn handle_escape(
         }
         // Si el byte es menor que 0x20 (control char) o mayor que 0x7E (~),
         // probablemente no es parte de la secuencia — ignorar
-        if b < 0x20 || b > 0x7E {
+        if !(0x20..=0x7E).contains(&b) {
             return;
         }
         param_buf.push(b);

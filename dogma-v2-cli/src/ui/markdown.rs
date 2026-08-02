@@ -202,10 +202,7 @@ fn parse_inline(text: &str) -> Vec<Span<'static>> {
                         }
                         let link_text: String = chars[i + 1..end_bracket].iter().collect();
                         let url: String = chars[end_bracket + 2..end_paren].iter().collect();
-                        spans.push(Span::styled(
-                            link_text,
-                            Style::default().fg(Color::Blue),
-                        ));
+                        spans.push(Span::styled(link_text, Style::default().fg(Color::Blue)));
                         spans.push(Span::styled(
                             format!(" ({url})"),
                             Style::default().fg(Color::DarkGray),

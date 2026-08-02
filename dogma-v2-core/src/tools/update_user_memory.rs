@@ -241,9 +241,7 @@ mod tests {
     #[tokio::test]
     async fn test_unknown_action() {
         let (_dir, tool) = make_tool();
-        let result = tool
-            .call(&serde_json::json!({"action": "unknown"}))
-            .await;
+        let result = tool.call(&serde_json::json!({"action": "unknown"})).await;
         assert!(result.is_err());
     }
 }

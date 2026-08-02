@@ -81,10 +81,7 @@ impl UserMemory {
         self.collection
             .documents()
             .map(|d| {
-                let category = d
-                    .metadata_val("category")
-                    .unwrap_or("unknown")
-                    .to_string();
+                let category = d.metadata_val("category").unwrap_or("unknown").to_string();
                 (d.id.clone(), d.text.clone(), category)
             })
             .collect()
@@ -134,10 +131,7 @@ impl UserMemory {
             section.push_str(&format!("  - {key}: {value} [{category}]\n"));
         }
         if entries.len() > 10 {
-            section.push_str(&format!(
-                "  ... and {} more entries\n",
-                entries.len() - 10
-            ));
+            section.push_str(&format!("  ... and {} more entries\n", entries.len() - 10));
         }
         section
     }

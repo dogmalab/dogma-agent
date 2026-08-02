@@ -246,7 +246,7 @@ pub struct ProviderConfig {
 
 ---
 
-## 7. Tool Trait — Las 3 de Supervivencia
+## 7. Tool Trait — De 3 de Supervivencia a 10 Herramientas
 
 ### 7.1. Definicion
 
@@ -276,23 +276,16 @@ impl ToolRegistry {
 
 ### 7.3. Herramientas Implementadas
 
-**read_file**: Lee contenido de archivos locales.
-- Parametro: `path` (string, requerido)
-- Limite: 1 MB
-- Rechaza directorios
-- Retorna el contenido textual completo
+Las 3 de supervivencia (`read_file`, `write_file`, `execute_script`) son las unicas
+registradas por defecto. Se registran ademas, segun contexto:
 
-**write_file**: Crea o sobrescribe archivos.
-- Parametros: `path` (string), `content` (string)
-- Limite: 1 MB
-- Crea directorios padre automaticamente
-- Retorna confirmacion con bytes escritos
-
-**execute_script**: Ejecuta scripts en lenguajes interpretados.
-- Parametros: `lang` (enum: bash, sh, python, py, node, js), `code` (string)
-- Limite: 100 KB de codigo, 30s timeout
-- Retorna stdout + stderr (truncado a 50 KB)
-- Usa `tokio::process::Command` con timeout
+- `search_memory(query, ...)` — busqueda semantica en sesiones pasadas (siempre)
+- `update_user_memory(action, ...)` — preferencias del usuario (siempre)
+- `plan(task, steps)` — planes estructurados (siempre)
+- `delegate_task(...)` — sub-agentes efimeros (siempre)
+- `install_skill(...)` — skills dinamicos desde skills.sh (si skills.sh presente)
+- `web_search(query)` — busqueda web via Exa (si `EXA_API_KEY`)
+- `web_extract(urls)` — extraccion de URLs (si `EXA_API_KEY`)
 
 ---
 
@@ -441,14 +434,13 @@ strip = true
 
 | Metrica | Objetivo | Actual |
 |---------|----------|--------|
-| LOC totales | < 5,000 | ~2,335 |
-| Archivos .rs | < 20 | 13 |
-| Dependencias core | < 10 | 8 |
-| Tools en core | = 3 | 3 |
-| Tests | > 20 | 13 |
+| LOC totales | < 15,000 | ~12,310 |
+| Archivos .rs | < 60 | 45 |
+| Tools en core | 3 supervivencia + 7 condicionales | 10 |
+| Tests | > 190 | 196 |
 | Warnings | 0 | 0 |
 | unsafe | 0 | 0 |
 
 ---
 
-*Ultima actualizacion: 2026-05-25*
+*Ultima actualizacion: 2026-08-01*
