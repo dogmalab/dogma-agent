@@ -239,6 +239,14 @@ impl Renderer {
         self.draw();
     }
 
+    /// Muestra un mensaje informativo neutro (ej. cancelación).
+    pub fn show_info(&mut self, msg: &str) {
+        self.chat.show_info(msg);
+        self.status.set_busy(false);
+        self.scroll_to_bottom();
+        self.draw();
+    }
+
     pub fn show_input(&mut self, buffer: &str) {
         self.input_buffer = buffer.to_string();
         self.draw();

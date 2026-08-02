@@ -9,6 +9,9 @@
 //! 5. Repite hasta obtener una respuesta final.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use serde_json::Value;
 
 use crate::models::events::AgentEvent;
 use crate::runtime::provider::{LLMProvider, LLMResponse, Message, MessageRole, TokenUsage};
@@ -169,6 +172,51 @@ fn load_session_history(session: &SessionManager, session_id: &str) -> Vec<Messa
     }
 }
 
+/// Intenta recuperar un prefijo JSON válido de un string con caracteres
+/// trailing (típico cuando el LLM produce tool call arguments con un `}`
+/// de más o texto extra después del JSON).
+///
+/// Devuelve el mayor prefijo de `s` que es un JSON válido, o `None` si
+/// no se puede recuperar nada.
+fn recover_json(s: &str) -> Option<String> {
+    if serde_json::from_str::<serde_json::Value>(s).is_ok() {
+        return Some(s.to_string());
+    }
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escape = false;
+    let mut last_valid_end: Option<usize> = None;
+    for (i, b) in s.bytes().enumerate() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        if in_string {
+            if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 && serde_json::from_str::<serde_json::Value>(&s[..=i]).is_ok() {
+                    return Some(s[..=i].to_string());
+                }
+                if depth == 0 {
+                    last_valid_end = Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    last_valid_end.map(|i| s[..=i].to_string())
+}
+
 /// El orquestador principal del ciclo IA.
 pub struct RuntimeLoop {
     provider: Arc<dyn LLMProvider>,
@@ -187,6 +235,8 @@ pub struct RuntimeLoop {
     workspace_collection: Option<Arc<RwLock<dogma_vdb::collection::Collection>>>,
     /// Plan activo actual (si existe).
     active_plan: Option<crate::models::plan::Plan>,
+    /// Flag de cancelación. Se chequea entre iteraciones del tool loop.
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl RuntimeLoop {
@@ -217,7 +267,20 @@ impl RuntimeLoop {
             user_memory: None,
             workspace_collection: None,
             active_plan: None,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Señala al tool loop que aborte en la próxima iteración.
+    /// La llamada LLM en curso (si la hay) completará; las iteraciones
+    /// siguientes se saltan.
+    pub fn cancel(&self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Devuelve `true` si se solicitó cancelación.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_flag.load(Ordering::Relaxed)
     }
 
     /// Conecta la memoria del usuario al runtime.
@@ -474,6 +537,9 @@ impl RuntimeLoop {
     pub async fn run(&self, prompt: &str, session_id: &str) -> Result<String> {
         info!("Runtime loop starting for session {}", session_id);
 
+        // Resetear flag de cancelación al inicio de cada run.
+        self.cancel_flag.store(false, Ordering::Relaxed);
+
         // Compute continuity BEFORE state lock (reads self.state)
         let continuity_ctx = self.build_continuity_context(session_id);
 
@@ -536,6 +602,13 @@ impl RuntimeLoop {
     /// Bucle interno que alterna entre LLM y tool calls.
     async fn tool_loop(&self, session_id: &str) -> Result<String> {
         loop {
+            // Check cancellation (Esc en la TUI)
+            if self.is_cancelled() {
+                return Err(dogma_v2_common::error::Error::Execution(
+                    "cancelled by user".into(),
+                ));
+            }
+
             // Check iteration limit
             {
                 let state = self.state.read();
@@ -709,6 +782,14 @@ impl RuntimeLoop {
                 state.messages.push(msg);
             }
 
+            // Abortar antes de ejecutar tools si el usuario pulsó Esc
+            // durante la generación de la respuesta.
+            if self.is_cancelled() {
+                return Err(dogma_v2_common::error::Error::Execution(
+                    "cancelled by user".into(),
+                ));
+            }
+
             for tc in &tool_calls {
                 info!("Executing tool: {} (id={})", tc.name, tc.id);
 
@@ -719,24 +800,35 @@ impl RuntimeLoop {
                 };
 
                 let tool_result: String = match tool_ref {
-                    Some(tool) => match serde_json::from_str(&tc.arguments) {
-                        Ok(args) => match tool.call(&args).await {
-                            Ok(output) => output,
-                            Err(e) => {
-                                error!("Tool {} failed: {e}", tc.name);
-                                format!("error: {e}")
+                    Some(tool) => {
+                        // Parsear argumentos, con recuperación si el LLM
+                        // generó JSON malformado (típico: `}` de más o texto
+                        // extra después del JSON).
+                        let parsed_args = serde_json::from_str::<Value>(&tc.arguments)
+                            .ok()
+                            .or_else(|| {
+                                recover_json(&tc.arguments)
+                                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                            });
+                        match parsed_args {
+                            Some(args) => match tool.call(&args).await {
+                                Ok(output) => output,
+                                Err(e) => {
+                                    error!("Tool {} failed: {e}", tc.name);
+                                    format!("error: {e}")
+                                }
+                            },
+                            None => {
+                                let preview: String = tc.arguments.chars().take(200).collect();
+                                let msg = format!(
+                                    "error: invalid arguments for {}: failed to parse JSON — args preview: {preview}",
+                                    tc.name
+                                );
+                                error!("{msg}");
+                                msg
                             }
-                        },
-                        Err(e) => {
-                            let preview: String = tc.arguments.chars().take(200).collect();
-                            let msg = format!(
-                                "error: invalid arguments for {}: {e} — args preview: {preview}",
-                                tc.name
-                            );
-                            error!("{msg}");
-                            msg
                         }
-                    },
+                    }
                     None => {
                         let msg = format!("tool not found: {}", tc.name);
                         error!("{msg}");
@@ -817,6 +909,43 @@ mod tests {
         let config = LoopConfig::default();
         assert_eq!(config.max_tool_iterations, 25);
         assert!(config.context_compression);
+    }
+
+    #[test]
+    fn test_recover_json_trailing_brace() {
+        // Caso típico del LLM: un `}` de más.
+        let s = r#"{"query": "DeepSeek V4 release"}}"#;
+        let r = recover_json(s).expect("should recover");
+        assert_eq!(r, r#"{"query": "DeepSeek V4 release"}"#);
+    }
+
+    #[test]
+    fn test_recover_json_trailing_text() {
+        // Texto extra después del JSON válido.
+        let s = r#"{"query": "x"} some commentary here"#;
+        let r = recover_json(s).expect("should recover");
+        assert_eq!(r, r#"{"query": "x"}"#);
+    }
+
+    #[test]
+    fn test_recover_json_already_valid() {
+        let s = r#"{"query": "x", "num": 5}"#;
+        let r = recover_json(s).expect("should return as-is");
+        assert_eq!(r, s);
+    }
+
+    #[test]
+    fn test_recover_json_nested() {
+        // Objetos anidados con `}` de más al final.
+        let s = r#"{"args": {"a": 1}, "flag": true}}"#;
+        let r = recover_json(s).expect("should recover");
+        assert_eq!(r, r#"{"args": {"a": 1}, "flag": true}"#);
+    }
+
+    #[test]
+    fn test_recover_json_garbage() {
+        // No se puede recuperar nada.
+        assert!(recover_json("not json at all").is_none());
     }
 
     #[test]

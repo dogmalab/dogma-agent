@@ -1003,6 +1003,7 @@ async fn cmd_interactive(
                                              │    Enter      — Send prompt (or newline if line is full)  │\n\
                                              │    Ctrl+J     — Always add new line                       │\n\
                                              │    Up / Down  — Navigate input history                    │\n\
+                                             │    Esc        — Abort the current query                   │\n\
                                              │                                                           │\n\
                                              │  SCROLL                                                    │\n\
                                              │    PageUp/Down  — Scroll chat                             │\n\
@@ -1054,6 +1055,16 @@ async fn cmd_interactive(
                             KeyCode::Backspace => {
                                 input_buffer.pop();
                                 renderer.show_input(&input_buffer);
+                            }
+                            // Esc: abortar consulta en curso (si busy) o limpiar input
+                            KeyCode::Esc => {
+                                if busy {
+                                    runtime.cancel();
+                                    eprintln!("\n[cancel] abortando consulta...");
+                                } else {
+                                    input_buffer.clear();
+                                    renderer.show_input("");
+                                }
                             }
                             // Ctrl+J = insert newline (multi-line input)
                             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1131,7 +1142,12 @@ async fn cmd_interactive(
                         renderer.finish_response();
                     }
                     Ok(Err(e)) => {
-                        renderer.show_error(&e.to_string());
+                        let msg = e.to_string();
+                        if msg.contains("cancelled by user") {
+                            renderer.show_info("[cancelled] consulta abortada");
+                        } else {
+                            renderer.show_error(&msg);
+                        }
                     }
                     Err(_) => {
                         renderer.show_error("LLM task panicked");

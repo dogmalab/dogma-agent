@@ -139,9 +139,12 @@ impl OpenAiProvider {
             "max_tokens": self.config.max_tokens,
         });
 
-        // Inyectar herramientas si hay — formato estándar OpenAI
+        // Inyectar herramientas si hay — formato estándar OpenAI.
+        // `tool_choice: "auto"` explícito: algunos proveedores (p.ej.
+        // DeepSeek) no activan function calling sin él.
         if !tools.is_empty() {
             body["tools"] = serde_json::Value::Array(tools.to_vec());
+            body["tool_choice"] = "auto".into();
         }
 
         body

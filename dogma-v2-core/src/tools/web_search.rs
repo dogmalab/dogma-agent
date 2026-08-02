@@ -56,13 +56,15 @@ impl WebSearchTool {
             .map_err(|e| format!("failed to read DuckDuckGo response: {e}"))?;
 
         let web_results = parse_ddg_html(&html, num_results);
-        if web_results.is_empty() {
-            return Err(format!(
-                "DuckDuckGo devolvió 0 resultados para: {query}. Puede que el backend haya cambiado su HTML."
-            ));
-        }
+        // "0 resultados" es un resultado válido, no un error: el LLM puede
+        // reformular la query. Se incluye una nota para orientarlo.
+        let note = if web_results.is_empty() {
+            format!("No results found for: {query}. Try rephrasing the search query.")
+        } else {
+            String::new()
+        };
 
-        let output = json!({ "success": true, "data": { "web": web_results } });
+        let output = json!({ "success": true, "data": { "web": web_results }, "note": note });
         serde_json::to_string_pretty(&output).map_err(|e| format!("serialization error: {e}"))
     }
 
@@ -127,7 +129,13 @@ impl WebSearchTool {
             }
         }
 
-        let output = json!({ "success": true, "data": { "web": web_results } });
+        let note = if web_results.is_empty() {
+            format!("No results found for: {query}. Try rephrasing the search query.")
+        } else {
+            String::new()
+        };
+
+        let output = json!({ "success": true, "data": { "web": web_results }, "note": note });
         serde_json::to_string_pretty(&output).map_err(|e| format!("serialization error: {e}"))
     }
 }

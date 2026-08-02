@@ -76,6 +76,14 @@ impl StatusBar {
             .map(|b| format!(" ({b})"))
             .unwrap_or_default();
 
+        // Mientras hay una llamada en curso y aún no hay usage, mostrar un
+        // indicador de trabajo en vez de un "0.0% · 0 tok" confuso.
+        let numeric = if self.busy && self.tokens == 0 {
+            " working…".to_string()
+        } else {
+            format!(" {pct:.1}% · {tokens} tok · {window} win")
+        };
+
         let line = Line::from(vec![
             Span::raw(status_icon),
             Span::raw(" "),
@@ -87,10 +95,7 @@ impl StatusBar {
             ),
             Span::raw("  "),
             Span::styled(&bar, Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(" {pct:.1}% · {tokens} tok · {window} win"),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(numeric, Style::default().fg(Color::DarkGray)),
             Span::styled(git, Style::default().fg(Color::DarkGray)),
         ]);
 

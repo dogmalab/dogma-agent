@@ -61,6 +61,12 @@ impl ChatRenderer {
         self.content.push_str(&format!("[error] {msg}\n\n"));
     }
 
+    /// Añade un mensaje informativo neutro (no es error).
+    pub fn show_info(&mut self, msg: &str) {
+        self.clear_thinking();
+        self.content.push_str(&format!("[info] {msg}\n\n"));
+    }
+
     /// Limpia todo el chat.
     pub fn clear(&mut self) {
         self.content.clear();
