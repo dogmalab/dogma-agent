@@ -162,17 +162,43 @@ enum Commands {
 fn main() {
     let cli = Cli::parse();
 
-    // En modo interactivo, silenciar tracing (conflictúa con la UI)
+    // En modo interactivo, los logs van a un archivo: la pantalla alterna
+    // de la TUI se corrompe si algo se escribe a stderr (se pinta sobre el
+    // input). En non-interactive, logging a stderr.
     let is_interactive = matches!(cli.command, Commands::Interactive { .. });
-    let default_filter = if is_interactive { "error" } else { "info" };
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| default_filter.into()),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    if is_interactive {
+        let log_dir = resolve_data_dir(&cli.data_dir)
+            .unwrap_or_else(|_| std::path::PathBuf::from("~/.dogma"))
+            .join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("dogma.log");
+        match std::fs::File::options()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            Ok(file) => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_writer(file)
+                    .init();
+            }
+            Err(_) => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_writer(std::io::stderr)
+                    .init();
+            }
+        }
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     // Ejecutar el comando
     let runtime = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
@@ -986,47 +1012,21 @@ async fn cmd_interactive(
                                     "/exit" | "/quit" => break,
                                     "/help" => {
                                         renderer.show_sent(&prompt);
-                                        eprintln!(
-                                            "┌─ Dogma 2.0 Interactive ─────────────────────────────────┐\n\
-                                             │                                                           │\n\
-                                             │  START                                                     │\n\
-                                             │    dogma interactive            — Start interactive mode  │\n\
-                                             │    dogma interactive \"hello\"    — Start with initial msg  │\n\
-                                             │    dogma chat \"quick prompt\"    — Single-shot (no TUI)    │\n\
-                                             │                                                           │\n\
-                                             │  COMANDOS                                                 │\n\
-                                             │    /help        — Show this help                          │\n\
-                                             │    /exit /quit  — Exit interactive mode                   │\n\
-                                             │    /status      — Show session stats                      │\n\
-                                             │                                                           │\n\
-                                             │  INPUT                                                     │\n\
-                                             │    Enter      — Send prompt (or newline if line is full)  │\n\
-                                             │    Ctrl+J     — Always add new line                       │\n\
-                                             │    Up / Down  — Navigate input history                    │\n\
-                                             │    Esc        — Abort the current query                   │\n\
-                                             │                                                           │\n\
-                                             │  SCROLL                                                    │\n\
-                                             │    PageUp/Down  — Scroll chat                             │\n\
-                                             │    Home / End   — Jump to top/bottom                      │\n\
-                                             │                                                           │\n\
-                                             │  HERRAMIENTAS (el agente puede usarlas)                   │\n\
-                                             │    search_memory      — Semantic search across sessions  │\n\
-                                             │    update_user_memory — Store/retrieve user preferences  │\n\
-                                             │    read_file/write_file — File operations                 │\n\
-                                             │    execute_script     — Run code (bash/python/wasm)       │\n\
-                                             │    plan               — Create structured task plans      │\n\
-                                             │    delegate_task      — Spawn sub-agents                  │\n\
-                                             │    web_search/web_extract — Web search (DuckDuckGo, no key) │\n\
-                                             │                                                           │\n\
-                                             └───────────────────────────────────────────────────────────┘"
+                                        renderer.show_info(
+                                            "START\n  dogma interactive [prompt]  — TUI\n  dogma chat \"msg\"           — one-shot\n\n\
+                                             COMMANDS\n  /help /status /exit /quit\n\n\
+                                             INPUT\n  Enter  — send (or newline if line full)\n  Ctrl+J — newline\n  Up/Down — history\n  Esc    — abort query\n\n\
+                                             SCROLL\n  PageUp/Down — scroll\n  Home/End    — top/bottom\n\n\
+                                             TOOLS\n  read_file, write_file, execute_script, search_memory,\n  update_user_memory, plan, delegate_task, web_search, web_extract",
                                         );
                                         renderer.show_input("");
                                     }
                                     "/status" => {
                                         renderer.show_sent(&prompt);
-                                        eprintln!("Session: {session_id}");
-                                        eprintln!("Model: {model_name}");
-                                        eprintln!("Data dir: {}", data_dir.display());
+                                        renderer.show_info(&format!(
+                                            "Session: {session_id}\nModel: {model_name}\nData dir: {}",
+                                            data_dir.display()
+                                        ));
                                         renderer.show_input("");
                                     }
                                     prompt => {
@@ -1060,7 +1060,6 @@ async fn cmd_interactive(
                             KeyCode::Esc => {
                                 if busy {
                                     runtime.cancel();
-                                    eprintln!("\n[cancel] abortando consulta...");
                                 } else {
                                     input_buffer.clear();
                                     renderer.show_input("");

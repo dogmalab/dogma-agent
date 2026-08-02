@@ -145,16 +145,25 @@ impl Renderer {
         rows.clamp(1, MAX_INPUT_ROWS)
     }
 
-    fn scroll_to_bottom(&mut self) {
+    /// Alto del área de chat (resto de la terminal tras tools, input, status).
+    fn chat_area_height(&self) -> usize {
         let Some(terminal) = self.terminal.as_ref() else {
-            return;
+            return 0;
         };
-        let area = terminal.size().unwrap_or(ratatui::layout::Size {
+        let size = terminal.size().unwrap_or(ratatui::layout::Size {
             width: 80,
             height: 24,
         });
-        let chat_height = area.height.saturating_sub(6) as usize;
-        self.chat.scroll_to_bottom(chat_height);
+        let inner_height = size.height as usize;
+        let inner_width = size.width.saturating_sub(4).max(1);
+        let input_rows = Self::input_rows(&self.input_buffer, inner_width) as usize;
+        // tools(1) + sep(1) + input + sep(1) + status(1)
+        inner_height.saturating_sub(4 + input_rows)
+    }
+
+    /// Scroll al final del chat.
+    fn scroll_to_bottom(&mut self) {
+        self.chat.scroll_to_bottom(self.chat_area_height());
     }
 
     // ── Public API (mantenida para compatibilidad con main.rs) ──────
@@ -193,6 +202,14 @@ impl Renderer {
                     .finish(&tool_name, &format!("done in {duration_ms}ms"));
                 self.draw();
             }
+            AgentEvent::ToolError { tool_name, message } => {
+                // Mostrar el error de tool en el área de chat, no sobre el input.
+                self.chat.show_error(&format!("{tool_name}: {message}"));
+                if self.chat.is_auto_scroll() {
+                    self.scroll_to_bottom();
+                }
+                self.draw();
+            }
             AgentEvent::GoalEvaluated { completed, .. } => {
                 if !completed {
                     self.tools.fail("goal", "goal failed");
@@ -216,7 +233,9 @@ impl Renderer {
             }
             AgentEvent::ContentChunk { content } => {
                 self.chat.push_content(&content);
-                self.scroll_to_bottom();
+                if self.chat.is_auto_scroll() {
+                    self.scroll_to_bottom();
+                }
                 self.draw();
             }
             AgentEvent::SubAgentTerminated { .. } => {}
@@ -228,14 +247,18 @@ impl Renderer {
         self.status.set_busy(false);
         self.tools.clear();
         self.chat.push_content("\n\n");
-        self.scroll_to_bottom();
+        if self.chat.is_auto_scroll() {
+            self.scroll_to_bottom();
+        }
         self.draw();
     }
 
     pub fn show_error(&mut self, msg: &str) {
         self.chat.show_error(msg);
         self.status.set_busy(false);
-        self.scroll_to_bottom();
+        if self.chat.is_auto_scroll() {
+            self.scroll_to_bottom();
+        }
         self.draw();
     }
 
@@ -243,7 +266,9 @@ impl Renderer {
     pub fn show_info(&mut self, msg: &str) {
         self.chat.show_info(msg);
         self.status.set_busy(false);
-        self.scroll_to_bottom();
+        if self.chat.is_auto_scroll() {
+            self.scroll_to_bottom();
+        }
         self.draw();
     }
 
@@ -277,14 +302,7 @@ impl Renderer {
     }
 
     pub fn scroll_down(&mut self) {
-        let Some(terminal) = self.terminal.as_ref() else {
-            return;
-        };
-        let area = terminal.size().unwrap_or(ratatui::layout::Size {
-            width: 80,
-            height: 24,
-        });
-        let chat_height = area.height.saturating_sub(6) as usize;
+        let chat_height = self.chat_area_height();
         self.chat.scroll_down(chat_height);
         self.draw();
     }

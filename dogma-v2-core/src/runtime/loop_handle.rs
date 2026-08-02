@@ -830,11 +830,20 @@ impl RuntimeLoop {
                         }
                     }
                     None => {
-                        let msg = format!("tool not found: {}", tc.name);
+                        let msg = format!("error: tool not found: {}", tc.name);
                         error!("{msg}");
                         msg
                     }
                 };
+
+                // Emitir evento de error de tool para la UI (si conectada),
+                // para que se muestre en el chat y no como logs sobre la TUI.
+                if tool_result.starts_with("error:") {
+                    if let Some(ref tx) = self.event_tx {
+                        let msg = tool_result.trim_start_matches("error: ").to_string();
+                        let _ = tx.try_send(AgentEvent::tool_error(tc.name.clone(), msg));
+                    }
+                }
 
                 // Persist tool result under session lock (best-effort)
                 {

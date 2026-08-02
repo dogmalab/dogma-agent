@@ -45,6 +45,9 @@ pub enum AgentEvent {
         tool_name: String,
         duration_ms: u64,
     },
+    /// Un tool call falló (error de la herramienta o argumentos inválidos).
+    /// La UI lo muestra en el chat, no sobre el input.
+    ToolError { tool_name: String, message: String },
     /// El subagente terminó su ejecución.
     SubAgentTerminated {
         goal_id: String,
@@ -112,6 +115,12 @@ impl AgentEvent {
             tool_name,
             duration_ms,
         }
+    }
+
+    /// Crea un evento de error de tool (para mostrar en el chat de la UI).
+    #[must_use]
+    pub fn tool_error(tool_name: String, message: String) -> Self {
+        Self::ToolError { tool_name, message }
     }
 
     /// Crea un evento de terminación de subagente.
@@ -198,6 +207,7 @@ mod tests {
             AgentEvent::stage_changed("g1".into(), "planning".into(), Some(0.85)),
             AgentEvent::goal_evaluated("g1".into(), "task1".into(), true, 2),
             AgentEvent::tool_executed("g1".into(), "read_file".into(), 42),
+            AgentEvent::tool_error("web_search".into(), "failed".into()),
             AgentEvent::terminated("g1".into(), true, "done".into()),
             AgentEvent::status(0.3, 5000, "claude".into()),
         ];
