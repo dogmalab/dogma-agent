@@ -414,6 +414,7 @@ impl LLMProvider for OpenAiProvider {
 
             let mut stream = response.bytes_stream();
             let mut buffer = String::new();
+            let mut last_usage = TokenUsage::default();
 
             while let Some(chunk_result) = stream.next().await {
                 let chunk = match chunk_result {
@@ -441,13 +442,18 @@ impl LLMProvider for OpenAiProvider {
                     }
 
                     if line == "data: [DONE]" {
-                        let _ = tx.send(Ok(StreamChunk::Done(TokenUsage::default()))).await;
+                        let _ = tx.send(Ok(StreamChunk::Done(last_usage))).await;
                         return;
                     }
 
                     if let Some(data) = line.strip_prefix("data: ") {
                         match serde_json::from_str::<Value>(data) {
                             Ok(json) => {
+                                // El chunk final de OpenAI/DeepSeek incluye
+                                // `usage`; guardarlo para el Done real.
+                                if let Some(u) = Self::parse_stream_usage(&json) {
+                                    last_usage = u;
+                                }
                                 if let Some(chunks) = Self::parse_stream_chunk(&json) {
                                     for chunk in chunks {
                                         let _ = tx.send(Ok(chunk)).await;
@@ -531,6 +537,12 @@ impl OpenAiProvider {
         }
 
         result
+    }
+
+    /// Extrae `TokenUsage` del objeto `usage` dentro de un chunk SSE.
+    fn parse_stream_usage(json: &Value) -> Option<TokenUsage> {
+        let usage = json.get("usage")?;
+        Some(Self::parse_usage(usage))
     }
 
     /// Extrae `TokenUsage` del objeto `usage`.
@@ -727,6 +739,34 @@ mod tests {
         assert_eq!(usage.prompt_tokens, 0);
         assert_eq!(usage.completion_tokens, 0);
         assert_eq!(usage.total_tokens, 0);
+    }
+
+    #[test]
+    fn test_parse_stream_usage_from_chunk() {
+        // El chunk final del stream SSE incluye `usage`.
+        let chunk = serde_json::json!({
+            "id": "chatcmpl-1",
+            "choices": [{"delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 512,
+                "completion_tokens": 128,
+                "total_tokens": 640
+            }
+        });
+        let usage = OpenAiProvider::parse_stream_usage(&chunk)
+            .expect("usage should be extracted from the final chunk");
+        assert_eq!(usage.prompt_tokens, 512);
+        assert_eq!(usage.completion_tokens, 128);
+        assert_eq!(usage.total_tokens, 640);
+    }
+
+    #[test]
+    fn test_parse_stream_usage_missing() {
+        // Chunks intermedios no tienen usage → None.
+        let chunk = serde_json::json!({
+            "choices": [{"delta": {"content": "hola"}}]
+        });
+        assert!(OpenAiProvider::parse_stream_usage(&chunk).is_none());
     }
 
     #[test]

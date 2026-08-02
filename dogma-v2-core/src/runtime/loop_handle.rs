@@ -33,7 +33,8 @@ const DEFAULT_SYSTEM_PROMPT: &str = "\
     - `search_memory` — semantic search across all past conversations\n\
     - `plan` — create structured plans for complex tasks (use FIRST for complex work)\n\
     - `delegate_task` — spawn sub-agents for isolated execution (with optional skills)\n\
-    - `install_skill` — install dynamic capabilities from skills.sh\n\n\
+    - `install_skill` — install dynamic capabilities from skills.sh\n\
+    - `web_search`, `web_extract` — browse the web for information and extract page content (works out of the box)\n\n\
     WORKFLOW: For complex tasks, start by calling `plan` to create a structured \
     breakdown, then execute each step using the appropriate tools. Use \
     `delegate_task` for steps that need focused, independent sub-agents. \
@@ -727,7 +728,11 @@ impl RuntimeLoop {
                             }
                         },
                         Err(e) => {
-                            let msg = format!("error: invalid arguments for {}: {}", tc.name, e);
+                            let preview: String = tc.arguments.chars().take(200).collect();
+                            let msg = format!(
+                                "error: invalid arguments for {}: {e} — args preview: {preview}",
+                                tc.name
+                            );
                             error!("{msg}");
                             msg
                         }

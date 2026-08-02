@@ -44,6 +44,9 @@ chrono.workspace = true
 regex-lite = "0.1"
 base64 = "0.22"
 
+# HTML parsing (web_search/web_extract — DuckDuckGo backend sin API key)
+scraper = "0.21"
+
 [dev-dependencies]
 tracing-subscriber.workspace = true
 tempfile = "3"

@@ -147,18 +147,14 @@ pub fn create_survival_tools() -> ToolRegistry {
     registry
 }
 
-/// Crea herramientas web si la API key está configurada.
+/// Crea el registry de herramientas web.
 ///
-/// Lee `EXA_API_KEY` del environment. Si no está presente,
-/// retorna un registry vacío.
+/// Siempre incluye `web_search` y `web_extract`. Por defecto usan
+/// DuckDuckGo (sin key); si `EXA_API_KEY` está definida, usan Exa.
 pub fn create_web_tools() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
-    if let Ok(api_key) = std::env::var("EXA_API_KEY") {
-        if !api_key.is_empty() {
-            registry.register(Box::new(WebSearchTool::new(api_key.clone())));
-            registry.register(Box::new(WebExtractTool::new(api_key)));
-        }
-    }
+    registry.register(Box::new(WebSearchTool::new()));
+    registry.register(Box::new(WebExtractTool::new()));
     registry
 }
 

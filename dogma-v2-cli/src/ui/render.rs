@@ -18,6 +18,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use super::{ChatRenderer, Spinner, StatusBar, ToolDisplay};
 
@@ -122,10 +123,11 @@ impl Renderer {
         let width = width.max(1) as usize;
         let mut rows: u16 = 0;
         for line in buffer.split('\n') {
+            let line_width = line.width();
             let line_rows = if line.is_empty() {
                 1
             } else {
-                line.len().div_ceil(width).max(1) as u16
+                line_width.div_ceil(width).max(1) as u16
             };
             rows = rows.saturating_add(line_rows);
             if rows >= MAX_INPUT_ROWS {
@@ -136,7 +138,7 @@ impl Renderer {
         // avanza a la siguiente fila.
         let lines: Vec<&str> = buffer.split('\n').collect();
         if let Some(last) = lines.last() {
-            if !last.is_empty() && last.len() % width == 0 {
+            if !last.is_empty() && last.width() % width == 0 {
                 rows += 1;
             }
         }
@@ -341,22 +343,26 @@ fn render_input(frame: &mut ratatui::Frame, area: Rect, input_buffer: &str) {
 }
 
 /// Calcula la posición visual (columna, fila 0-indexada) del cursor dentro
-/// del input, teniendo en cuenta el wrap a `width` columnas.
+/// del input, teniendo en cuenta el wrap a `width` columnas y el display
+/// width de cada carácter (emojis/CJK = 2 columnas).
 fn cursor_position(buffer: &str, width: usize) -> (usize, usize) {
     let width = width.max(1);
     let lines: Vec<&str> = buffer.split('\n').collect();
 
     let rows_before: usize = lines[..lines.len().saturating_sub(1)]
         .iter()
-        .map(|l| l.chars().count().div_ceil(width).max(1))
+        .map(|l| {
+            let w = l.width();
+            if w == 0 { 1 } else { w.div_ceil(width).max(1) }
+        })
         .sum();
 
-    let last_len = lines.last().copied().unwrap_or("").chars().count();
-    let row = rows_before + (last_len / width);
-    let col = if last_len > 0 && last_len % width == 0 {
+    let last_width = lines.last().copied().unwrap_or("").width();
+    let row = rows_before + (last_width / width);
+    let col = if last_width > 0 && last_width % width == 0 {
         0
     } else {
-        last_len % width
+        last_width % width
     };
 
     (col, row)
@@ -402,5 +408,24 @@ mod tests {
         assert_eq!(cursor_position("1234567890", 10), (0, 1));
         // Vacío → (0, 0).
         assert_eq!(cursor_position("", 10), (0, 0));
+    }
+
+    #[test]
+    fn test_cursor_position_wide_chars() {
+        // Emoji ocupa 2 columnas: "abc🦜" = 5 celdas visuales.
+        // En ancho 10 no wrappea: fila 0, col 5.
+        assert_eq!(cursor_position("abc🦜", 10), (5, 0));
+        // "🦜🦜🦜🦜🦜" = 10 celdas → llena el ancho 10 exacto → fila 1, col 0.
+        assert_eq!(cursor_position("🦜🦜🦜🦜🦜", 10), (0, 1));
+        // Mezcla: "🦜abc" = 2+3 = 5 celdas → col 5.
+        assert_eq!(cursor_position("🦜abc", 10), (5, 0));
+    }
+
+    #[test]
+    fn test_input_rows_wide_chars() {
+        // "🦜🦜🦜🦜🦜" = 10 celdas → 1 fila + cursor = 2.
+        assert_eq!(Renderer::input_rows("🦜🦜🦜🦜🦜", 10), 2);
+        // "🦜🦜🦜🦜🦜a" = 11 celdas → 2 filas.
+        assert_eq!(Renderer::input_rows("🦜🦜🦜🦜🦜a", 10), 2);
     }
 }

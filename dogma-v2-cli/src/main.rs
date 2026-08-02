@@ -21,7 +21,7 @@
 //! * `plan` — crear planes estructurados para tareas complejas
 //! * `delegate_task` — spawn sub-agentes para ejecución aislada
 //! * `install_skill` — instalar skills dinámicas desde skills.sh
-//! * `web_search`, `web_extract` — búsqueda web (requiere EXA_API_KEY)
+//! * `web_search`, `web_extract` — búsqueda/extracción web (DuckDuckGo sin key; Exa si EXA_API_KEY)
 //!
 //! ## Memoria
 //!
@@ -382,9 +382,8 @@ struct RuntimeBundle {
 ///
 /// Herramientas registradas:
 /// - Siempre: read_file, write_file, execute_script, search_memory,
-///   update_user_memory, plan, delegate_task
+///   update_user_memory, plan, delegate_task, web_search, web_extract
 /// - Con skills.sh: install_skill
-/// - Con `EXA_API_KEY`: web_search, web_extract
 async fn setup_runtime(
     data_dir: &PathBuf,
     config: &config::DogmaConfig,
@@ -523,15 +522,9 @@ async fn setup_runtime(
     runtime.register_tool(Box::new(delegate_tool));
     info!("DelegateTaskTool registered");
 
-    if let Ok(api_key) = std::env::var("EXA_API_KEY") {
-        if !api_key.is_empty() {
-            runtime.register_tool(Box::new(dogma_v2_core::tools::WebSearchTool::new(
-                api_key.clone(),
-            )));
-            runtime.register_tool(Box::new(dogma_v2_core::tools::WebExtractTool::new(api_key)));
-            info!("Web tools registered (EXA_API_KEY present)");
-        }
-    }
+    runtime.register_tool(Box::new(dogma_v2_core::tools::WebSearchTool::new()));
+    runtime.register_tool(Box::new(dogma_v2_core::tools::WebExtractTool::new()));
+    info!("Web tools registered (DuckDuckGo por defecto; Exa si EXA_API_KEY está definida)");
 
     Ok(RuntimeBundle {
         runtime,
@@ -1022,7 +1015,7 @@ async fn cmd_interactive(
                                              │    execute_script     — Run code (bash/python/wasm)       │\n\
                                              │    plan               — Create structured task plans      │\n\
                                              │    delegate_task      — Spawn sub-agents                  │\n\
-                                             │    web_search/web_extract — Web search (needs EXA key)    │\n\
+                                             │    web_search/web_extract — Web search (DuckDuckGo, no key) │\n\
                                              │                                                           │\n\
                                              └───────────────────────────────────────────────────────────┘"
                                         );
