@@ -6,6 +6,10 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub enum InputEvent {
     Key(KeyEvent),
+    /// Rueda del ratón hacia arriba.
+    ScrollUp,
+    /// Rueda del ratón hacia abajo.
+    ScrollDown,
     Tick,
     Quit,
 }
@@ -85,8 +89,31 @@ fn handle_escape(
         return;
     }
 
+    // SGR mouse: ESC [ < button;x;y M/m — rueda del ratón.
+    let mut third = [0u8; 1];
+    if std::io::Read::read(reader, &mut third).is_err() {
+        return;
+    }
+    if third[0] == b'<' {
+        let mut mouse_buf = vec![b'<'];
+        loop {
+            let mut byte = [0u8; 1];
+            if std::io::Read::read(reader, &mut byte).is_err() {
+                return;
+            }
+            mouse_buf.push(byte[0]);
+            if byte[0] == b'M' || byte[0] == b'm' {
+                resolve_mouse_sgr(&mouse_buf, tx);
+                return;
+            }
+            if mouse_buf.len() > 20 {
+                return;
+            }
+        }
+    }
+
     // CSI sequence: ESC [ ... — leer todo hasta terminador
-    let mut param_buf = Vec::new();
+    let mut param_buf = vec![third[0]];
     let mut byte = [0u8; 1];
     loop {
         if std::io::Read::read(reader, &mut byte).is_err() {
@@ -109,6 +136,31 @@ fn handle_escape(
         if param_buf.len() > 10 {
             return;
         }
+    }
+}
+
+/// Resuelve una secuencia SGR de ratón (rueda). Formato:
+/// `ESC[<button;x;yM` (presionar) o `...m` (soltar).
+///
+/// Botones: 64 = rueda arriba, 65 = rueda abajo. Clicks/motion se ignoran.
+fn resolve_mouse_sgr(mouse_buf: &[u8], tx: &mpsc::UnboundedSender<InputEvent>) {
+    // mouse_buf = "<button;x;yM"
+    let mut num: u32 = 0;
+    for &b in &mouse_buf[1..] {
+        if b.is_ascii_digit() {
+            num = num.saturating_mul(10).saturating_add(u32::from(b - b'0'));
+        } else {
+            break;
+        }
+    }
+    match num {
+        64 => {
+            let _ = tx.send(InputEvent::ScrollUp);
+        }
+        65 => {
+            let _ = tx.send(InputEvent::ScrollDown);
+        }
+        _ => {} // clicks u otros botones: ignorar
     }
 }
 
@@ -170,4 +222,38 @@ fn byte_to_keyevent(byte: u8) -> KeyEvent {
         _ => (KeyCode::Char('?'), KeyModifiers::NONE),
     };
     make_key(code, modifiers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recv(rx: &mut mpsc::UnboundedReceiver<InputEvent>) -> InputEvent {
+        match rx.try_recv() {
+            Ok(ev) => ev,
+            other => panic!("expected event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mouse_wheel_up() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        resolve_mouse_sgr(b"<64;10;5M", &tx);
+        assert!(matches!(recv(&mut rx), InputEvent::ScrollUp));
+    }
+
+    #[test]
+    fn test_mouse_wheel_down() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        resolve_mouse_sgr(b"<65;10;5M", &tx);
+        assert!(matches!(recv(&mut rx), InputEvent::ScrollDown));
+    }
+
+    #[test]
+    fn test_mouse_click_ignored() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        resolve_mouse_sgr(b"<0;10;5M", &tx);
+        resolve_mouse_sgr(b"<35;10;5M", &tx);
+        assert!(rx.try_recv().is_err(), "clicks must not produce events");
+    }
 }

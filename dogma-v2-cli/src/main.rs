@@ -1016,7 +1016,7 @@ async fn cmd_interactive(
                                             "START\n  dogma interactive [prompt]  — TUI\n  dogma chat \"msg\"           — one-shot\n\n\
                                              COMMANDS\n  /help /status /exit /quit\n\n\
                                              INPUT\n  Enter  — send (or newline if line full)\n  Ctrl+J — newline\n  Up/Down — history\n  Esc    — abort query\n\n\
-                                             SCROLL\n  PageUp/Down — scroll\n  Home/End    — top/bottom\n\n\
+                                             SCROLL\n  PageUp/Down  — scroll\n  mouse wheel  — scroll\n  Home/End     — top/bottom\n\n\
                                              TOOLS\n  read_file, write_file, execute_script, search_memory,\n  update_user_memory, plan, delegate_task, web_search, web_extract",
                                         );
                                         renderer.show_input("");
@@ -1114,6 +1114,8 @@ async fn cmd_interactive(
                             _ => {}
                         }
                     }
+                    InputEvent::ScrollUp => renderer.scroll_up(),
+                    InputEvent::ScrollDown => renderer.scroll_down(),
                     InputEvent::Quit => break,
                     InputEvent::Tick => {
                         renderer.tick();

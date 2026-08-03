@@ -58,6 +58,7 @@ impl Renderer {
         let _ = crossterm::execute!(
             std::io::stderr(),
             crossterm::terminal::EnterAlternateScreen,
+            crossterm::event::EnableMouseCapture,
             crossterm::cursor::Show,
         );
 
@@ -67,7 +68,11 @@ impl Renderer {
 
         let original_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic_info| {
-            let _ = crossterm::execute!(std::io::stderr(), crossterm::cursor::Show);
+            let _ = crossterm::execute!(
+                std::io::stderr(),
+                crossterm::event::DisableMouseCapture,
+                crossterm::cursor::Show,
+            );
             let _ = terminal::disable_raw_mode();
             let _ =
                 crossterm::execute!(std::io::stderr(), crossterm::terminal::LeaveAlternateScreen,);
@@ -322,6 +327,7 @@ impl Renderer {
         let _ = terminal::disable_raw_mode();
         let _ = crossterm::execute!(
             std::io::stderr(),
+            crossterm::event::DisableMouseCapture,
             crossterm::terminal::LeaveAlternateScreen,
             crossterm::cursor::Show,
         );

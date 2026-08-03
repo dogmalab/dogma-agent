@@ -1,8 +1,7 @@
 //! # Spinner — Indicador animado de actividad
 //!
-//! Rune cycle: ᚛ ᚜ ᛟ ᛝ ᛜ ᛛ
-//! Ciclo lento (150ms) que evoca sabiduría antigua,
-//! consistente con la estética "Dogma".
+//! Frames ASCII clásicos (barra giratoria) que se distinguen bien en
+//! cualquier terminal y fuente.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -10,8 +9,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-/// Frames de animación — ASCII puro, funciona en cualquier terminal.
-const FRAMES: [&str; 4] = ["o", "O", "0", "O"];
+/// Frames de animación — ASCII puro, visualmente distintos.
+const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
 
 /// Indicador animado que muestra una rune rotativa.
 pub struct Spinner {
@@ -78,16 +77,18 @@ mod tests {
     #[test]
     fn test_spinner_new() {
         let s = Spinner::new();
-        assert_eq!(s.current(), "o");
+        assert_eq!(s.current(), "|");
     }
 
     #[test]
     fn test_spinner_tick() {
         let mut s = Spinner::new();
         s.tick();
-        assert_eq!(s.current(), "O");
+        assert_eq!(s.current(), "/");
         s.tick();
-        assert_eq!(s.current(), "0");
+        assert_eq!(s.current(), "-");
+        s.tick();
+        assert_eq!(s.current(), "\\");
     }
 
     #[test]
@@ -96,7 +97,7 @@ mod tests {
         for _ in 0..FRAMES.len() {
             s.tick();
         }
-        assert_eq!(s.current(), "o");
+        assert_eq!(s.current(), "|");
     }
 
     #[test]
